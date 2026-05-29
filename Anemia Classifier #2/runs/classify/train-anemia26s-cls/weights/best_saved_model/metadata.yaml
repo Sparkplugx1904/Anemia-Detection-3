@@ -1,0 +1,24 @@
+description: Ultralytics YOLO26s-cls model trained on /kaggle/working/anemia-classification-2
+author: Ultralytics
+date: '2026-05-29T09:18:12.048819'
+version: 8.4.56
+license: AGPL-3.0 License (https://ultralytics.com/license)
+docs: https://docs.ultralytics.com
+stride: 1
+task: classify
+batch: 1
+imgsz:
+- 448
+- 448
+names:
+  0: anemic
+  1: non-anemic
+args:
+  data: null
+  batch: 1
+  fraction: 1.0
+  half: true
+  int8: false
+  nms: false
+channels: 3
+end2end: false

@@ -1,0 +1,7 @@
+path: /kaggle/input/datasets/sparkplugx1904/conjunctiva-detection-yolo26s-seg/eye-conjunctiva-detector-2
+train: train/images
+val: valid/images
+test: test/images
+nc: 1
+names:
+- conjunctiva

@@ -1,0 +1,18 @@
+model: yolo26n-seg
+task: segment
+imgsz: 320
+nc: 1
+names:
+- conjunctiva
+primary_format: tflite
+precision: fp16
+android_delegate: GPU (CompatibilityList + bestOptionsForThisDevice)
+nms_free: true
+nms_coord_format: x1y1x2y2
+proto_space: global_image
+executorch_note: Blocked by KeyError feats in Ultralytics 8.4.x + YOLO26
+val_box_mAP50: 0.9776
+val_mask_mAP50: 0.9776
+val_mask_mAP5095: 0.6583
+test_mask_mAP50: 0.9644
+test_mask_mAP5095: 0.6444

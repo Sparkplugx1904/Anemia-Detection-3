@@ -1,0 +1,17 @@
+model: yolo26s-cls
+task: classify
+imgsz: 448
+nc: 2
+names:
+  0: anemic
+  1: non-anemic
+primary_format: tflite
+precision: fp16
+android_delegate: GPU (CompatibilityList + bestOptionsForThisDevice)
+class_order: "alphabetical \u2014 anemic=0, non-anemic=1"
+anedetapp_mapping: 0=Anemia, 1=Non-Anemia
+input_note: Pre-cropped conjunctiva patch from segmentation model
+val_top1: 0.9062
+val_top5: 1.0
+test_top1: 0.875
+test_top5: 1.0
