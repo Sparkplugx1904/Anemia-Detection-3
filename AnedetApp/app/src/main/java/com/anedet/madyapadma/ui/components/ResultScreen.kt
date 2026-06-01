@@ -54,6 +54,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.anedet.madyapadma.camera.CameraViewModel
 import com.anedet.madyapadma.model.PredictionResult
@@ -88,21 +89,14 @@ fun ResultScreen(
     onRetake: () -> Unit,
     viewModel: CameraViewModel = viewModel()
 ) {
-    var result by remember { mutableStateOf<PredictionResult?>(null) }
-    var isLoading by remember { mutableStateOf(true) }
+    val predictionResult by viewModel.predictionResult.collectAsStateWithLifecycle()
+    val isAnalyzing     by viewModel.isAnalyzing.collectAsStateWithLifecycle()
 
     LaunchedEffect(imagePath) {
         viewModel.analyzeImage(imagePath)
     }
 
-    LaunchedEffect(Unit) {
-        viewModel.predictionResult.collect { prediction ->
-            if (prediction != null) {
-                result = prediction
-                isLoading = false
-            }
-        }
-    }
+    val isLoading = isAnalyzing || (predictionResult == null)
 
     val scaleAnim by animateFloatAsState(
         targetValue = if (!isLoading) 1f else 0.8f,
@@ -128,8 +122,8 @@ fun ResultScreen(
                 }
             }
 
-            result != null -> {
-                val prediction = result!!
+            predictionResult != null -> {
+                val prediction = predictionResult!!
                 if (prediction.error != null) {
                     ErrorContent(message = prediction.error, onRetake = onRetake)
                 } else {

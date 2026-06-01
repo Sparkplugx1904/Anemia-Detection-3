@@ -5,153 +5,233 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ColorFilter
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
+import android.graphics.LightingColorFilter
+import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
 import android.graphics.RectF
+import com.anedet.madyapadma.model.MaskData
 import com.anedet.madyapadma.model.PredictionResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 class AnemiaPipeline(private val context: Context) {
 
-    private var segmentor: Segmentor? = null
-    private var classifier: Classifier? = null
+    // Init di konstruktor, bukan lazy — hindari race condition
+    private val segmentor = Segmentor(context)
+    private val classifier = Classifier(context)
 
     suspend fun analyze(imagePath: String): PredictionResult = withContext(Dispatchers.Default) {
         val startTime = System.currentTimeMillis()
 
         try {
-            ensureModels()
+            // 1. Segmentasi
+            val segResult = segmentor.runSegmentation(imagePath)
+                ?: return@withContext PredictionResult(
+                    isAnemic = false,
+                    anemicProbability = 0f,
+                    nonAnemicProbability = 0f,
+                    maskOverlay = null,
+                    inferenceTimeMs = elapsed(startTime),
+                    error = "Konjungtiva tidak terdeteksi"
+                )
 
-            val segResult = segmentor?.runSegmentation(imagePath)
-            if (segResult == null) {
+            // 2. Crop konjungtiva langsung sebagai Bitmap (tanpa roundtrip ke disk)
+            val original = BitmapFactory.decodeFile(imagePath)
+                ?: return@withContext PredictionResult(
+                    isAnemic = false,
+                    anemicProbability = 0f,
+                    nonAnemicProbability = 0f,
+                    maskOverlay = null,
+                    inferenceTimeMs = elapsed(startTime),
+                    error = "Gagal decode gambar"
+                )
+
+            val croppedBitmap = cropConjunctiva(original, segResult.bbox)
+            if (croppedBitmap == null) {
+                original.recycle()
                 return@withContext PredictionResult(
                     isAnemic = false,
                     anemicProbability = 0f,
                     nonAnemicProbability = 0f,
                     maskOverlay = null,
-                    inferenceTimeMs = System.currentTimeMillis() - startTime,
-                    error = "No conjunctiva detected"
+                    inferenceTimeMs = elapsed(startTime),
+                    error = "Gagal crop konjungtiva"
                 )
             }
 
-            val croppedPath = cropConjunctiva(imagePath, segResult.bbox)
-            if (croppedPath == null) {
-                return@withContext PredictionResult(
-                    isAnemic = false,
-                    anemicProbability = 0f,
-                    nonAnemicProbability = 0f,
-                    maskOverlay = null,
-                    inferenceTimeMs = System.currentTimeMillis() - startTime,
-                    error = "Failed to crop conjunctiva"
-                )
-            }
+            // 3. Klasifikasi — terima Bitmap langsung
+            val clsResult = classifier.classify(croppedBitmap)
+            croppedBitmap.recycle()
 
-            val clsResult = classifier?.classify(croppedPath)
             if (clsResult == null) {
+                original.recycle()
                 return@withContext PredictionResult(
                     isAnemic = false,
                     anemicProbability = 0f,
                     nonAnemicProbability = 0f,
                     maskOverlay = null,
-                    inferenceTimeMs = System.currentTimeMillis() - startTime,
-                    error = "Classification failed"
+                    inferenceTimeMs = elapsed(startTime),
+                    error = "Klasifikasi gagal"
                 )
             }
+
+            // 4. Buat mask overlay dari proto space (efisien)
+            val maskOverlay = createMaskOverlay(original, segResult)
+            original.recycle()
 
             val (anemicProb, nonAnemicProb) = clsResult
-            val maskOverlay = createMaskOverlay(imagePath, segResult.mask)
-            val elapsed = System.currentTimeMillis() - startTime
 
             PredictionResult(
                 isAnemic = anemicProb > nonAnemicProb,
                 anemicProbability = anemicProb,
                 nonAnemicProbability = nonAnemicProb,
                 maskOverlay = maskOverlay,
-                inferenceTimeMs = elapsed,
+                inferenceTimeMs = elapsed(startTime),
                 bbox = segResult.bbox
             )
+
         } catch (e: Exception) {
             PredictionResult(
                 isAnemic = false,
                 anemicProbability = 0f,
                 nonAnemicProbability = 0f,
                 maskOverlay = null,
-                inferenceTimeMs = System.currentTimeMillis() - startTime,
+                inferenceTimeMs = elapsed(startTime),
                 error = e.message ?: "Unknown error"
             )
         }
     }
 
-    private fun ensureModels() {
-        if (segmentor == null) segmentor = Segmentor(context)
-        if (classifier == null) classifier = Classifier(context)
-    }
+    /**
+     * Crop region bbox dari bitmap original dan resize ke ukuran input classifier.
+     * Tidak menulis ke disk — langsung kembalikan Bitmap.
+     */
+    private fun cropConjunctiva(bitmap: Bitmap, bbox: RectF): Bitmap? {
+        return try {
+            val left   = bbox.left.coerceIn(0f, (bitmap.width  - 1).toFloat())
+            val top    = bbox.top.coerceIn(0f,  (bitmap.height - 1).toFloat())
+            val right  = bbox.right.coerceIn(left + 1f, bitmap.width.toFloat())
+            val bottom = bbox.bottom.coerceIn(top + 1f, bitmap.height.toFloat())
 
-    private fun cropConjunctiva(imagePath: String, bbox: RectF): String? {
-        try {
-            val bitmap = BitmapFactory.decodeFile(imagePath) ?: return null
+            val cropW = (right - left).toInt().coerceAtLeast(1)
+            val cropH = (bottom - top).toInt().coerceAtLeast(1)
 
-            val left = bbox.left.coerceAtLeast(0f)
-            val top = bbox.top.coerceAtLeast(0f)
-            val right = bbox.right.coerceAtMost(bitmap.width.toFloat())
-            val bottom = bbox.bottom.coerceAtMost(bitmap.height.toFloat())
-            val width = (right - left).toInt().coerceAtLeast(1)
-            val height = (bottom - top).toInt().coerceAtLeast(1)
-
-            val cropped = Bitmap.createBitmap(bitmap, left.toInt(), top.toInt(), width, height)
+            val cropped = Bitmap.createBitmap(bitmap, left.toInt(), top.toInt(), cropW, cropH)
+            // Resize ke input size classifier — classifier akan handle letterbox sendiri
             val resized = Bitmap.createScaledBitmap(cropped, Classifier.INPUT_SIZE, Classifier.INPUT_SIZE, true)
-
-            val cropFile = java.io.File(context.cacheDir, "crop_${System.currentTimeMillis()}.jpg")
-            resized.compress(Bitmap.CompressFormat.JPEG, 90, java.io.FileOutputStream(cropFile))
-
-            cropped.recycle()
-            resized.recycle()
-            bitmap.recycle()
-
-            return cropFile.absolutePath
+            if (cropped !== resized) cropped.recycle()
+            resized
         } catch (e: Exception) {
-            return null
+            null
         }
     }
 
-    private fun createMaskOverlay(imagePath: String, mask: Array<FloatArray>): Bitmap? {
-        try {
-            val bitmap = BitmapFactory.decodeFile(imagePath) ?: return null
-            val overlay = bitmap.copy(Bitmap.Config.ARGB_8888, true)
-            val canvas = Canvas(overlay)
+    /**
+     * Buat overlay bitmap dari mask MaskData.
+     *
+     * Jika mask ada di proto space (isProtoSpace = true):
+     *   - Buat Bitmap kecil dari proto mask (160×160)
+     *   - Scale ke ukuran display menggunakan Matrix + Canvas — satu operasi GPU-accelerated
+     *   - Jauh lebih cepat dari per-pixel drawPoint()
+     *
+     * Hasilnya: Bitmap ARGB_8888 seukuran original dengan overlay hijau semi-transparan.
+     */
+    private fun createMaskOverlay(original: Bitmap, segResult: MaskData): Bitmap? {
+        return try {
+            val mask = segResult.mask
+            val maskH = mask.size
+            val maskW = if (maskH > 0) mask[0].size else 0
+            if (maskW == 0) return null
 
-            val maskPaint = Paint().apply {
-                color = Color.argb(100, 76, 175, 80)
-                style = Paint.Style.FILL
-            }
-            val borderPaint = Paint().apply {
-                color = Color.argb(200, 76, 175, 80)
-                style = Paint.Style.STROKE
-                strokeWidth = 4f
-            }
-
-            val scaleY = mask.size.toFloat() / overlay.height
-            val scaleX = mask[0].size.toFloat() / overlay.width
-
-            for (y in 0 until overlay.height) {
-                for (x in 0 until overlay.width) {
-                    val my = (y * scaleY).toInt().coerceAtMost(mask.size - 1)
-                    val mx = (x * scaleX).toInt().coerceAtMost(mask[0].size - 1)
-                    if (mask[my][mx] > 0.5f) {
-                        canvas.drawPoint(x.toFloat(), y.toFloat(), maskPaint)
-                    }
+            // 1. Buat Bitmap kecil dari mask (ARGB_8888 agar bisa set alpha per pixel)
+            val maskBitmap = Bitmap.createBitmap(maskW, maskH, Bitmap.Config.ARGB_8888)
+            val maskColor = Color.argb(180, 76, 175, 80)   // hijau semi-transparan
+            val transparent = Color.TRANSPARENT
+            for (y in 0 until maskH) {
+                for (x in 0 until maskW) {
+                    maskBitmap.setPixel(x, y, if (mask[y][x] > 0.5f) maskColor else transparent)
                 }
             }
 
-            bitmap.recycle()
-            return overlay
+            // 2. Buat overlay bitmap seukuran original
+            val overlay = original.copy(Bitmap.Config.ARGB_8888, true)
+            val canvas = Canvas(overlay)
+
+            // 3. Hitung Matrix untuk scale mask ke ukuran original (kompensasi letterbox)
+            val matrix = if (segResult.isProtoSpace) {
+                buildMaskMatrix(
+                    maskW = maskW, maskH = maskH,
+                    protoW = segResult.protoW, protoH = segResult.protoH,
+                    imgW = original.width, imgH = original.height,
+                    lbScale = segResult.lbScale,
+                    lbPadLeft = segResult.lbPadLeft, lbPadTop = segResult.lbPadTop
+                )
+            } else {
+                // Mask sudah di image space, scale langsung
+                Matrix().apply {
+                    setScale(
+                        original.width.toFloat()  / maskW,
+                        original.height.toFloat() / maskH
+                    )
+                }
+            }
+
+            val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+            canvas.drawBitmap(maskBitmap, matrix, paint)
+            maskBitmap.recycle()
+
+            overlay
         } catch (e: Exception) {
-            return null
+            null
         }
     }
 
+    /**
+     * Bangun Matrix untuk memetakan mask dari proto space ke koordinat gambar original.
+     *
+     * Alur koordinat:
+     *   proto px → input model (INPUT_SIZE=320) → gambar original (kompensasi letterbox)
+     *
+     *   protoToModel : scale = INPUT_SIZE / protoW (dan INPUT_SIZE / protoH)
+     *   modelToOrig  : (coord - pad) / lbScale
+     *
+     * Jadi protoToOrig:
+     *   origX = (protoX * INPUT_SIZE/protoW - padLeft) / lbScale
+     *   origX = protoX * (INPUT_SIZE / protoW / lbScale) - padLeft / lbScale
+     */
+    private fun buildMaskMatrix(
+        maskW: Int, maskH: Int,
+        protoW: Int, protoH: Int,
+        imgW: Int, imgH: Int,
+        lbScale: Float,
+        lbPadLeft: Int, lbPadTop: Int
+    ): Matrix {
+        val modelPerProtoX = Segmentor.INPUT_SIZE.toFloat() / protoW
+        val modelPerProtoY = Segmentor.INPUT_SIZE.toFloat() / protoH
+
+        val scaleX = modelPerProtoX / lbScale
+        val scaleY = modelPerProtoY / lbScale
+        val transX = -lbPadLeft.toFloat() / lbScale
+        val transY = -lbPadTop.toFloat()  / lbScale
+
+        return Matrix().apply {
+            // Scale dari mask space ke proto space (jika mask == proto, ini 1x)
+            postScale(protoW.toFloat() / maskW, protoH.toFloat() / maskH)
+            // Scale + translate proto → original image
+            postScale(scaleX, scaleY)
+            postTranslate(transX, transY)
+        }
+    }
+
+    private fun elapsed(startTime: Long) = System.currentTimeMillis() - startTime
+
     fun close() {
-        segmentor?.close()
-        classifier?.close()
+        segmentor.close()
+        classifier.close()
     }
 }
