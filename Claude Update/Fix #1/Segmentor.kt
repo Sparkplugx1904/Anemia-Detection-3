@@ -24,7 +24,7 @@ class Segmentor(context: Context) {
         private const val LETTERBOX_FILL = 0.5f
     }
 
-    private var bundle: InterpreterBundle? = null
+    private var interpreter: Interpreter? = null
     private var outputShapes = listOf<IntArray>()
 
     // Pre-allocated input buffer — hindari alokasi heap setiap inference
@@ -47,12 +47,14 @@ class Segmentor(context: Context) {
 
     private fun loadModel(context: Context) {
         val modelBuffer = loadModelFile(context, MODEL_PATH)
-        bundle = TfLiteHelper.createInterpreter(modelBuffer)
-        val interp = bundle?.interpreter ?: throw RuntimeException("Failed to create interpreter")
+        val options = Interpreter.Options().apply {
+            numThreads = 4
+        }
+        interpreter = Interpreter(modelBuffer, options)
 
-        val numOutputs = interp.outputTensorCount
+        val numOutputs = interpreter?.outputTensorCount ?: 0
         outputShapes = (0 until numOutputs).map { idx ->
-            interp.getOutputTensor(idx)?.shape() ?: intArrayOf()
+            interpreter?.getOutputTensor(idx)?.shape() ?: intArrayOf()
         }
     }
 
@@ -116,7 +118,7 @@ class Segmentor(context: Context) {
     }
 
     private fun runInference(): List<Array<Any>>? {
-        val interp = bundle?.interpreter ?: return null
+        val interp = interpreter ?: return null
         val numOutputs = outputShapes.size
         if (numOutputs == 0) return null
 
@@ -333,7 +335,7 @@ class Segmentor(context: Context) {
     }
 
     fun close() {
-        bundle?.close()
-        bundle = null
+        interpreter?.close()
+        interpreter = null
     }
 }

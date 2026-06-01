@@ -33,7 +33,7 @@ class Classifier(context: Context) {
 
     companion object {
         private const val MODEL_PATH = "yolo26s_cls_fp16.tflite"
-        const val INPUT_SIZE = 448    // Letterbox target (model dilatih di 448px)
+        const val INPUT_SIZE = 224    // Letterbox target (model dilatih di 224px)
         private const val CLIP_MIN   = 8f
         private const val CLIP_MAX   = 25f
         private const val WB_STRENGTH = 0.8f

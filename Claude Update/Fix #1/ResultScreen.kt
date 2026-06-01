@@ -89,9 +89,12 @@ fun ResultScreen(
     onRetake: () -> Unit,
     viewModel: CameraViewModel = viewModel()
 ) {
+    // PERBAIKAN: Gunakan collectAsStateWithLifecycle bukan LaunchedEffect(Unit) + manual collect.
+    // collectAsStateWithLifecycle otomatis restart saat lifecycle active, tidak ada race condition.
     val predictionResult by viewModel.predictionResult.collectAsStateWithLifecycle()
     val isAnalyzing     by viewModel.isAnalyzing.collectAsStateWithLifecycle()
 
+    // Trigger analisis saat imagePath berubah
     LaunchedEffect(imagePath) {
         viewModel.analyzeImage(imagePath)
     }
@@ -117,7 +120,7 @@ fun ResultScreen(
                             color = MaterialTheme.colorScheme.primary
                         )
                         Spacer(modifier = Modifier.height(16.dp))
-                        Text("Analyzing...", style = MaterialTheme.typography.bodyLarge)
+                        Text("Menganalisis...", style = MaterialTheme.typography.bodyLarge)
                     }
                 }
             }
@@ -147,10 +150,19 @@ private fun ResultContent(
     onRetake: () -> Unit
 ) {
     var maskMode by remember { mutableStateOf(MaskMode.FULL) }
-    val bitmap = remember(imagePath) { BitmapFactory.decodeFile(imagePath) }
+
+    // Decode bitmap hanya sekali, di-cache dengan remember(imagePath)
+    val bitmap = remember(imagePath) {
+        BitmapFactory.decodeFile(imagePath)
+    }
+
+    // PERBAIKAN: maskOverlay langsung dari PredictionResult — tidak perlu state terpisah
+    // karena sudah dihasilkan di AnemiaPipeline dan dibawa lewat PredictionResult.
+    val maskOverlay = prediction.maskOverlay
+
     val isAnemic = prediction.isAnemic
     val diagColor = if (isAnemic) Color(0xFFE53935) else Color(0xFF43A047)
-    val diagText = if (isAnemic) "ANEMIC" else "NON-ANEMIC"
+    val diagText  = if (isAnemic) "ANEMIA" else "NON-ANEMIA"
 
     Column(
         modifier = Modifier
@@ -160,7 +172,7 @@ private fun ResultContent(
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
-            text = "Diagnosis Result",
+            text = "Hasil Diagnosis",
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(top = 24.dp)
@@ -177,44 +189,50 @@ private fun ResultContent(
                     .scale(scaleAnim)
             ) {
                 if (bitmap != null) {
+                    // Foto original
                     Image(
                         bitmap = bitmap.asImageBitmap(),
-                        contentDescription = "Captured eye",
+                        contentDescription = "Foto mata",
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Fit
                     )
 
+                    // Overlay mask / border sesuai mode
                     when (maskMode) {
                         MaskMode.FULL -> {
-                            if (prediction.maskOverlay != null) {
+                            // PERBAIKAN: maskOverlay sudah berisi Bitmap dengan mask yang di-render
+                            // dengan benar di AnemiaPipeline (bukan null lagi).
+                            if (maskOverlay != null) {
                                 Image(
-                                    bitmap = prediction.maskOverlay.asImageBitmap(),
-                                    contentDescription = "Mask overlay",
+                                    bitmap = maskOverlay.asImageBitmap(),
+                                    contentDescription = "Mask overlay segmentasi",
                                     modifier = Modifier.fillMaxSize(),
                                     contentScale = ContentScale.Fit,
-                                    alpha = 0.5f
+                                    alpha = 0.65f
                                 )
                             }
                         }
+
                         MaskMode.BORDER -> {
                             val bbox = prediction.bbox
-                            if (bbox != null) {
-                                val bw = bitmap.width.toFloat()
-                                val bh = bitmap.height.toFloat()
+                            if (bbox != null && bitmap != null) {
+                                val bitmapW = bitmap.width.toFloat()
+                                val bitmapH = bitmap.height.toFloat()
                                 Canvas(modifier = Modifier.fillMaxSize()) {
-                                    val sx = size.width / bw
-                                    val sy = size.height / bh
+                                    val sx = size.width  / bitmapW
+                                    val sy = size.height / bitmapH
                                     drawRoundRect(
                                         color = Color(0xFF4CAF50),
                                         topLeft = Offset(bbox.left * sx, bbox.top * sy),
                                         size = Size(bbox.width() * sx, bbox.height() * sy),
                                         cornerRadius = CornerRadius(12f, 12f),
-                                        style = Stroke(width = 4f)
+                                        style = Stroke(width = 3f)
                                     )
                                 }
                             }
                         }
-                        MaskMode.OFF -> { }
+
+                        MaskMode.OFF -> { /* tidak ada overlay */ }
                     }
                 }
             }
@@ -223,9 +241,9 @@ private fun ResultContent(
                 mode = maskMode,
                 onToggle = {
                     maskMode = when (maskMode) {
-                        MaskMode.OFF -> MaskMode.BORDER
+                        MaskMode.OFF    -> MaskMode.BORDER
                         MaskMode.BORDER -> MaskMode.FULL
-                        MaskMode.FULL -> MaskMode.OFF
+                        MaskMode.FULL   -> MaskMode.OFF
                     }
                 },
                 modifier = Modifier.padding(8.dp)
@@ -234,6 +252,7 @@ private fun ResultContent(
 
         Spacer(modifier = Modifier.height(24.dp))
 
+        // Panel diagnosis utama
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -251,7 +270,7 @@ private fun ResultContent(
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "Confidence: ${"%.1f".format(prediction.confidence * 100)}%",
+                    text = "Kepercayaan: ${"%.1f".format(prediction.confidence * 100)}%",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -260,6 +279,7 @@ private fun ResultContent(
 
         Spacer(modifier = Modifier.height(16.dp))
 
+        // Bar probabilitas
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly,
@@ -270,7 +290,7 @@ private fun ResultContent(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = "Anemic",
+                    text = "Anemia",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -306,7 +326,7 @@ private fun ResultContent(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = "Non-Anemic",
+                    text = "Non-Anemia",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -323,7 +343,7 @@ private fun ResultContent(
         Spacer(modifier = Modifier.height(6.dp))
 
         Text(
-            text = "Inference: ${prediction.inferenceTimeMs}ms",
+            text = "Waktu inferensi: ${prediction.inferenceTimeMs}ms",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -336,9 +356,11 @@ private fun ResultContent(
                 .fillMaxWidth()
                 .height(56.dp),
             shape = RoundedCornerShape(12.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.primary
+            )
         ) {
-            Text("Retake Photo", fontSize = 16.sp)
+            Text("Foto Ulang", fontSize = 16.sp)
         }
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -352,14 +374,14 @@ private fun MaskToggleButton(
     modifier: Modifier = Modifier
 ) {
     val icon = when (mode) {
-        MaskMode.FULL -> Icons.Filled.Layers
+        MaskMode.FULL   -> Icons.Filled.Layers
         MaskMode.BORDER -> Icons.Filled.BorderStyle
-        MaskMode.OFF -> Icons.Filled.LayersClear
+        MaskMode.OFF    -> Icons.Filled.LayersClear
     }
     val desc = when (mode) {
-        MaskMode.FULL -> "Full mask"
+        MaskMode.FULL   -> "Full mask"
         MaskMode.BORDER -> "Border mask"
-        MaskMode.OFF -> "No mask"
+        MaskMode.OFF    -> "No mask"
     }
 
     IconButton(
@@ -385,12 +407,14 @@ private fun ErrorContent(
     modifier: Modifier = Modifier
 ) {
     Column(
-        modifier = modifier.padding(32.dp),
+        modifier = modifier
+            .fillMaxSize()
+            .padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
         Text(
-            text = "Detection Failed",
+            text = "Deteksi Gagal",
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.error
@@ -403,6 +427,6 @@ private fun ErrorContent(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(modifier = Modifier.height(24.dp))
-        Button(onClick = onRetake) { Text("Try Again") }
+        Button(onClick = onRetake) { Text("Coba Lagi") }
     }
 }
