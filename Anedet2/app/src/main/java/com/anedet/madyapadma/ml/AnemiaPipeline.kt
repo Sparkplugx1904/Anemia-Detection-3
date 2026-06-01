@@ -67,7 +67,8 @@ class AnemiaPipeline(private val context: Context) {
                 anemicProbability = anemicProb,
                 nonAnemicProbability = nonAnemicProb,
                 maskOverlay = maskOverlay,
-                inferenceTimeMs = elapsed
+                inferenceTimeMs = elapsed,
+                bbox = segResult.bbox
             )
         } catch (e: Exception) {
             PredictionResult(

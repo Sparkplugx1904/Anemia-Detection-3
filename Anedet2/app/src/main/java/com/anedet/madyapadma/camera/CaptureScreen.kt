@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
@@ -19,12 +20,18 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.FlashOff
+import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -37,11 +44,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import java.io.File
-import java.util.concurrent.Executor
 
 @Composable
 fun CaptureScreen(
@@ -51,6 +56,8 @@ fun CaptureScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var isCapturing by remember { mutableStateOf(false) }
+    var torchEnabled by remember { mutableStateOf(false) }
+    var cameraRef by remember { mutableStateOf<Camera?>(null) }
     var hasCameraPermission by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
@@ -106,17 +113,39 @@ fun CaptureScreen(
                             val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
                             cameraProvider.unbindAll()
-                            cameraProvider.bindToLifecycle(
+                            val camera = cameraProvider.bindToLifecycle(
                                 lifecycleOwner,
                                 cameraSelector,
                                 preview,
                                 imageCapture
                             )
-                        }, ContextCompat.getMainExecutor(ctx))
+                            cameraRef = camera
+                        }, executor)
                     }
                 },
                 modifier = Modifier.fillMaxSize()
             )
+
+            IconButton(
+                onClick = {
+                    torchEnabled = !torchEnabled
+                    cameraRef?.cameraControl?.enableTorch(torchEnabled)
+                },
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 48.dp, end = 16.dp)
+                    .size(48.dp)
+                    .background(Color.Black.copy(alpha = 0.4f), CircleShape)
+                    .clip(CircleShape)
+            ) {
+                Icon(
+                    imageVector = if (torchEnabled) Icons.Default.FlashOn
+                    else Icons.Default.FlashOff,
+                    contentDescription = if (torchEnabled) "Torch on" else "Torch off",
+                    tint = if (torchEnabled) Color(0xFFFFD600) else Color.White,
+                    modifier = Modifier.size(26.dp)
+                )
+            }
 
             if (isCapturing) {
                 Box(
@@ -129,8 +158,9 @@ fun CaptureScreen(
                 }
             }
 
-            Button(
+            IconButton(
                 onClick = {
+                    if (isCapturing) return@IconButton
                     isCapturing = true
                     val file = File(context.cacheDir, "capture_${System.currentTimeMillis()}.jpg")
                     val outputOptions = ImageCapture.OutputFileOptions.Builder(file).build()
@@ -157,11 +187,17 @@ fun CaptureScreen(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .padding(bottom = 48.dp)
-                    .size(72.dp)
-                    .clip(CircleShape),
+                    .size(64.dp)
+                    .background(Color(0xFF9C27B0), RoundedCornerShape(12.dp))
+                    .clip(RoundedCornerShape(12.dp)),
                 enabled = !isCapturing
             ) {
-                Text("Capture")
+                Icon(
+                    imageVector = Icons.Default.CameraAlt,
+                    contentDescription = "Capture",
+                    tint = Color.White,
+                    modifier = Modifier.size(32.dp)
+                )
             }
         }
     }
