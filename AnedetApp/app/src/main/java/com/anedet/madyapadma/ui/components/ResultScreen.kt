@@ -43,6 +43,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -54,6 +55,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.anedet.madyapadma.R
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.anedet.madyapadma.camera.CameraViewModel
@@ -117,7 +119,7 @@ fun ResultScreen(
                             color = MaterialTheme.colorScheme.primary
                         )
                         Spacer(modifier = Modifier.height(16.dp))
-                        Text("Analyzing...", style = MaterialTheme.typography.bodyLarge)
+                        Text(stringResource(R.string.analyzing), style = MaterialTheme.typography.bodyLarge)
                     }
                 }
             }
@@ -150,7 +152,7 @@ private fun ResultContent(
     val bitmap = remember(imagePath) { BitmapFactory.decodeFile(imagePath) }
     val isAnemic = prediction.isAnemic
     val diagColor = if (isAnemic) Color(0xFFE53935) else Color(0xFF43A047)
-    val diagText = if (isAnemic) "ANEMIC" else "NON-ANEMIC"
+    val diagText = if (isAnemic) stringResource(R.string.anemic) else stringResource(R.string.non_anemic)
 
     Column(
         modifier = Modifier
@@ -160,7 +162,7 @@ private fun ResultContent(
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
-            text = "Diagnosis Result",
+            text = stringResource(R.string.diagnosis_result),
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(top = 24.dp)
@@ -270,7 +272,7 @@ private fun ResultContent(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = "Anemic",
+                    text = stringResource(R.string.anemic),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -306,7 +308,7 @@ private fun ResultContent(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = "Non-Anemic",
+                    text = stringResource(R.string.non_anemic),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -338,7 +340,7 @@ private fun ResultContent(
             shape = RoundedCornerShape(12.dp),
             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
         ) {
-            Text("Retake Photo", fontSize = 16.sp)
+            Text(stringResource(R.string.retake), fontSize = 16.sp)
         }
 
         Spacer(modifier = Modifier.height(16.dp))

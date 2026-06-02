@@ -1,3 +1,15 @@
 <resources>
     <string name="app_name">Anedet</string>
+    <string name="settings">Settings</string>
+    <string name="inference_settings">Inference Settings</string>
+    <string name="smart_auto_capture">Smart Auto-Capture</string>
+    <string name="confidence_threshold">Confidence Threshold</string>
+    <string name="storage">Storage</string>
+    <string name="save_to_device">Save to Device</string>
+    <string name="diagnosis_result">Diagnosis Result</string>
+    <string name="anemic">ANEMIC</string>
+    <string name="non_anemic">NON-ANEMIC</string>
+    <string name="analyzing">Analyzing...</string>
+    <string name="retake">Retake Photo</string>
+    <string name="language">Language</string>
 </resources>

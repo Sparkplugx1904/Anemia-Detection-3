@@ -1,0 +1,15 @@
+<resources>
+    <string name="app_name">Anedet</string>
+    <string name="settings">การตั้งค่า</string>
+    <string name="inference_settings">การตั้งค่าการอนุมาน</string>
+    <string name="smart_auto_capture">การจับภาพอัจฉริยะอัตโนมัติ</string>
+    <string name="confidence_threshold">เกณฑ์ความเชื่อมั่น</string>
+    <string name="storage">ที่เก็บข้อมูล</string>
+    <string name="save_to_device">บันทึกลงอุปกรณ์</string>
+    <string name="diagnosis_result">ผลการวินิจฉบับ</string>
+    <string name="anemic">โลหิตจาง</string>
+    <string name="non_anemic">ไม่เป็นโลหิตจาง</string>
+    <string name="analyzing">กำลังวิเคราะห์...</string>
+    <string name="retake">ถ่ายภาพใหม่</string>
+    <string name="language">ภาษา</string>
+</resources>

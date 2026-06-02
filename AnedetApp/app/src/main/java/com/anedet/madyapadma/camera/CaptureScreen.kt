@@ -7,6 +7,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
@@ -25,6 +26,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -44,13 +46,20 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.anedet.madyapadma.ml.Segmentor
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 @Composable
 fun CaptureScreen(
     onResult: (String) -> Unit,
+    onSettings: () -> Unit,
     viewModel: CameraViewModel = viewModel()
 ) {
     val context = LocalContext.current
@@ -82,6 +91,16 @@ fun CaptureScreen(
             .build()
     }
 
+    val segmentor = remember { Segmentor(context) }
+    var overlayView by remember { mutableStateOf<MaskOverlayView?>(null) }
+
+    val imageAnalysis = remember {
+        ImageAnalysis.Builder()
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
+            .build()
+    }
+
     if (!hasCameraPermission) {
         Column(
             modifier = Modifier.fillMaxSize(),
@@ -100,31 +119,77 @@ fun CaptureScreen(
         Box(modifier = Modifier.fillMaxSize()) {
             AndroidView(
                 factory = { ctx ->
-                    PreviewView(ctx).apply {
+                    val previewView = PreviewView(ctx).apply {
                         scaleType = PreviewView.ScaleType.FILL_CENTER
-
-                        val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
-                        cameraProviderFuture.addListener({
-                            val cameraProvider = cameraProviderFuture.get()
-                            val preview = Preview.Builder()
-                                .build()
-                                .also { it.setSurfaceProvider(surfaceProvider) }
-
-                            val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
-
-                            cameraProvider.unbindAll()
-                            val camera = cameraProvider.bindToLifecycle(
-                                lifecycleOwner,
-                                cameraSelector,
-                                preview,
-                                imageCapture
-                            )
-                            cameraRef = camera
-                        }, executor)
                     }
+                    val overlay = MaskOverlayView(ctx)
+                    overlayView = overlay
+
+                    val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
+                    cameraProviderFuture.addListener({
+                        val cameraProvider = cameraProviderFuture.get()
+                        val preview = Preview.Builder().build().also {
+                            it.setSurfaceProvider(previewView.surfaceProvider)
+                        }
+
+                        val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+
+                        imageAnalysis.setAnalyzer(executor) { imageProxy ->
+                            val bitmap = imageProxy.toBitmap()
+                            imageProxy.close()
+
+                            lifecycleOwner.lifecycleScope.launch(Dispatchers.Default) {
+                                val result = segmentor.runSegmentation(bitmap)
+                                withContext(Dispatchers.Main) {
+                                    if (result != null && result.confidence >= viewModel.confidenceThreshold.value) {
+                                        overlay.setMaskData(result)
+                                    } else {
+                                        overlay.setMaskData(null)
+                                    }
+                                }
+                                bitmap.recycle()
+                            }
+                        }
+
+                        cameraProvider.unbindAll()
+                        val camera = cameraProvider.bindToLifecycle(
+                            lifecycleOwner,
+                            cameraSelector,
+                            preview,
+                            imageCapture,
+                            imageAnalysis
+                        )
+                        cameraRef = camera
+                    }, executor)
+
+                    previewView
                 },
                 modifier = Modifier.fillMaxSize()
             )
+
+            overlayView?.let { overlay ->
+                AndroidView(
+                    factory = { overlay },
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+
+            IconButton(
+                onClick = onSettings,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(top = 48.dp, start = 16.dp)
+                    .size(48.dp)
+                    .background(Color.Black.copy(alpha = 0.4f), CircleShape)
+                    .clip(CircleShape)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Settings,
+                    contentDescription = "Settings",
+                    tint = Color.White,
+                    modifier = Modifier.size(26.dp)
+                )
+            }
 
             IconButton(
                 onClick = {
