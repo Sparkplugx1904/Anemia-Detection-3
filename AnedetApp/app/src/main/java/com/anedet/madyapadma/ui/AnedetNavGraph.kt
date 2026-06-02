@@ -7,12 +7,16 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.anedet.madyapadma.camera.CameraViewModel
 import com.anedet.madyapadma.camera.CaptureScreen
 import com.anedet.madyapadma.ui.components.ResultScreen
+import com.anedet.madyapadma.ui.components.SettingsScreen
 
 @Composable
 fun AnedetNavGraph() {
     val navController = rememberNavController()
+    val cameraViewModel: CameraViewModel = viewModel()
 
     NavHost(
         navController = navController,
@@ -20,10 +24,20 @@ fun AnedetNavGraph() {
     ) {
         composable("capture") {
             CaptureScreen(
+                viewModel = cameraViewModel,
                 onResult = { resultPath ->
                     val encoded = Uri.encode(resultPath)
                     navController.navigate("result/$encoded")
+                },
+                onSettings = {
+                    navController.navigate("settings")
                 }
+            )
+        }
+        composable("settings") {
+            SettingsScreen(
+                viewModel = cameraViewModel,
+                onBack = { navController.popBackStack() }
             )
         }
         composable(

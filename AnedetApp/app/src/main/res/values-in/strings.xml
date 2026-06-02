@@ -1,0 +1,15 @@
+<resources>
+    <string name="app_name">Anedet</string>
+    <string name="settings">Pengaturan</string>
+    <string name="inference_settings">Pengaturan Inferensi</string>
+    <string name="smart_auto_capture">Pengambilan Otomatis Pintar</string>
+    <string name="confidence_threshold">Ambang Batas Kepercayaan</string>
+    <string name="storage">Penyimpanan</string>
+    <string name="save_to_device">Simpan ke Perangkat</string>
+    <string name="diagnosis_result">Hasil Diagnosis</string>
+    <string name="anemic">ANEMIA</string>
+    <string name="non_anemic">TIDAK ANEMIA</string>
+    <string name="analyzing">Menganalisis...</string>
+    <string name="retake">Ambil Ulang Foto</string>
+    <string name="language">Bahasa</string>
+</resources>

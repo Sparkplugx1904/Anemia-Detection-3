@@ -25,6 +25,11 @@ class AnemiaPipeline(private val context: Context) {
     private val segmentor = Segmentor(context)
     private val classifier = Classifier(context)
 
+    suspend fun initialize() {
+        segmentor.initialize()
+        classifier.initialize()
+    }
+
     suspend fun analyze(imagePath: String): PredictionResult = withContext(Dispatchers.Default) {
         val startTime = System.currentTimeMillis()
 

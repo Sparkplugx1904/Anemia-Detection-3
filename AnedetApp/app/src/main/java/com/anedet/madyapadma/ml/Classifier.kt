@@ -3,8 +3,7 @@ package com.anedet.madyapadma.ml
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
-import com.anedet.madyapadma.ml.TfLiteHelper
-import org.tensorflow.lite.Interpreter
+import org.tensorflow.lite.InterpreterApi
 import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -29,7 +28,7 @@ import kotlin.math.sqrt
  *   5. AdaptiveCLAHE(clip 8–25)     — contrast enhancement di L* channel
  *   6. Normalize /255.0f            — ke [0,1]
  */
-class Classifier(context: Context) {
+class Classifier(private val context: Context) {
 
     companion object {
         private const val MODEL_PATH = "yolo26s_cls_fp16.tflite"
@@ -41,22 +40,27 @@ class Classifier(context: Context) {
         private const val GAMMA_MAX  = 1.2f
     }
 
-    private val bundle = run {
-        val buf = loadModelFile(context, MODEL_PATH)
-        TfLiteHelper.createInterpreter(buf)
-    }
-    private val interpreter: Interpreter get() = bundle.interpreter
+    private var engine: TfLiteEngine = TfLiteEngine(context)
+    private var interpreter: InterpreterApi? = null
 
     // Pre-allocated buffer
     private val inputBuffer: ByteBuffer = ByteBuffer
         .allocateDirect(1 * INPUT_SIZE * INPUT_SIZE * 3 * 4)
         .also { it.order(ByteOrder.nativeOrder()) }
 
+    suspend fun initialize() {
+        if (interpreter != null) return
+        engine.initialize()
+        val modelBuffer = loadModelFile(this.context, MODEL_PATH)
+        interpreter = engine.createInterpreter(modelBuffer, useGpu = true)
+    }
+
     /**
      * Klasifikasi dari Bitmap yang sudah di-crop dari region konjungtiva.
      * Mengembalikan Pair(anemicProb, nonAnemicProb).
      */
-    fun classify(bitmap: Bitmap): Pair<Float, Float>? {
+    suspend fun classify(bitmap: Bitmap): Pair<Float, Float>? {
+        if (interpreter == null) initialize()
         return try {
             preprocessToBuffer(bitmap)
             runClassification()
@@ -100,10 +104,14 @@ class Classifier(context: Context) {
     }
 
     private fun runClassification(): Pair<Float, Float>? {
-        val outputShape = interpreter.getOutputTensor(0).shape()
+        val interp = interpreter ?: return null
+        val outputShape = interp.getOutputTensor(0).shape()
         val numClasses = outputShape.getOrElse(1) { 2 }
         val output = Array(1) { FloatArray(numClasses) }
-        interpreter.run(inputBuffer, output)
+
+        val outputMap = HashMap<Int, Any>()
+        outputMap[0] = output
+        interp.runForMultipleInputsOutputs(arrayOf(inputBuffer), outputMap)
 
         val logits = output[0]
         // Numerically stable softmax
@@ -439,6 +447,7 @@ class Classifier(context: Context) {
     }
 
     fun close() {
-        bundle.close()
+        engine.close()
+        interpreter = null
     }
 }

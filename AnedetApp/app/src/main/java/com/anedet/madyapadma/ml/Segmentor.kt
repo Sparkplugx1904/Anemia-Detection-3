@@ -5,7 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.RectF
 import com.anedet.madyapadma.model.MaskData
-import org.tensorflow.lite.Interpreter
+import org.tensorflow.lite.InterpreterApi
 import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -14,7 +14,7 @@ import java.nio.channels.FileChannel
 import kotlin.math.exp
 import kotlin.math.min
 
-class Segmentor(context: Context) {
+class Segmentor(private val context: Context) {
 
     companion object {
         private const val MODEL_PATH = "yolo26n_seg_fp16.tflite"
@@ -24,8 +24,11 @@ class Segmentor(context: Context) {
         private const val LETTERBOX_FILL = 0.5f
     }
 
-    private var bundle: InterpreterBundle? = null
+    private var engine: TfLiteEngine = TfLiteEngine(context)
+    private var interpreter: InterpreterApi? = null
     private var outputShapes = listOf<IntArray>()
+
+    private val lock = Any()
 
     // Pre-allocated input buffer — hindari alokasi heap setiap inference
     private val inputBuffer: ByteBuffer = ByteBuffer
@@ -41,28 +44,28 @@ class Segmentor(context: Context) {
         val origH: Int
     )
 
-    init {
-        loadModel(context)
-    }
+    suspend fun initialize() {
+        if (interpreter != null) return
+        engine.initialize()
+        val modelBuffer = loadModelFile(this.context, MODEL_PATH)
+        interpreter = engine.createInterpreter(modelBuffer, useGpu = true)
 
-    private fun loadModel(context: Context) {
-        val modelBuffer = loadModelFile(context, MODEL_PATH)
-        bundle = TfLiteHelper.createInterpreter(modelBuffer)
-        val interp = bundle?.interpreter ?: throw RuntimeException("Failed to create interpreter")
-
+        val interp = interpreter ?: throw RuntimeException("Failed to create interpreter")
         val numOutputs = interp.outputTensorCount
         outputShapes = (0 until numOutputs).map { idx ->
             interp.getOutputTensor(idx)?.shape() ?: intArrayOf()
         }
     }
 
-    fun runSegmentation(imagePath: String): MaskData? {
+    suspend fun runSegmentation(imagePath: String): MaskData? {
+        if (interpreter == null) initialize()
         val bitmap = BitmapFactory.decodeFile(imagePath) ?: return null
-        val origW = bitmap.width
-        val origH = bitmap.height
+        return runSegmentation(bitmap)
+    }
 
+    fun runSegmentation(bitmap: Bitmap): MaskData? = synchronized(lock) {
+        val interp = interpreter ?: return null
         val lbParams = preprocess(bitmap)
-        bitmap.recycle()
 
         val outputs = runInference() ?: return null
         return parseOutput(outputs, lbParams)
@@ -116,13 +119,14 @@ class Segmentor(context: Context) {
     }
 
     private fun runInference(): List<Array<Any>>? {
-        val interp = bundle?.interpreter ?: return null
+        val interp = interpreter ?: return null
         val numOutputs = outputShapes.size
         if (numOutputs == 0) return null
 
         val outputs = arrayOfNulls<Any>(numOutputs)
         for (i in 0 until numOutputs) {
             val shape = outputShapes[i]
+            // We strip batch [1] here directly in allocation if possible or keep it
             outputs[i] = when (shape.size) {
                 2 -> Array(shape[0]) { FloatArray(shape[1]) }
                 3 -> Array(shape[0]) { Array(shape[1]) { FloatArray(shape[2]) } }
@@ -140,69 +144,45 @@ class Segmentor(context: Context) {
         return outputs.mapIndexed { i, out ->
             val sh = outputShapes[i]
             if (sh.isNotEmpty() && sh[0] == 1) {
-                @Suppress("UNCHECKED_CAST")
-                (out as Array<Any>)[0] as Array<Any>
+                if (out is Array<*>) {
+                    out[0] as Array<Any>
+                } else if (out is FloatArray) {
+                    // This case shouldn't happen with our logic but for safety
+                    out
+                } else {
+                    out as Any
+                }
             } else {
-                out as Array<Any>
+                out as Any
             }
-        }
+        }.filterIsInstance<Array<Any>>()
     }
 
     /**
      * Parse output YOLO-seg:
-     *   outputs[0]: detection tensor, shape setelah strip batch → [detRows, detCols] atau [numCols, numRows]
-     *   outputs[1]: proto tensor, shape setelah strip batch    → [protoH, protoW, numProtoChannels]
+     *   outputs[0]: detection tensor [1, 300, 38] -> stripped batch [300, 38]
      *
-     * Koordinat: model output x1y1x2y2 dalam skala INPUT_SIZE (320px).
-     * Perlu di-decode balik ke koordinat gambar original dengan memperhitungkan letterbox.
+     * Format YOLOv8-seg [300, 38]:
+     *  0-3: bbox (cx, cy, w, h) - Perlu konversi ke x1y1x2y2
+     *  4: confidence
+     *  5: class (eyelid/conjunctiva, etc - model ini khusus conjunctiva)
+     *  6-37: mask coefficients (32)
      */
     private fun parseOutput(outputs: List<Array<Any>>, lbParams: LetterboxParams): MaskData? {
         if (outputs.isEmpty()) return null
 
-        // --- Baca shape detection output ---
-        // Shape biasanya [numDetections, 4+1+numMaskCoeffs] atau transposed
-        val detShape = outputShapes[0]
+        val det0 = outputs[0] as Array<FloatArray> // [300][38]
+        val numAnchors = det0.size
+        val numFeatures = det0[0].size
 
-        // Deteksi apakah transposed: [cols, rows] vs [rows, cols]
-        // YOLO biasanya output [1, numCols, numRows] dimana numRows = 4+conf+coeffs
-        // Setelah strip batch: [numCols, numRows]
-        val det0 = outputs[0]
+        if (numFeatures < 38 || numAnchors == 0) return null
 
-        // Cek orientasi: baris mana yang berisi konfidence?
-        // Jika det[4][col] → berarti dim0=rows, dim1=cols (layout: row=feature, col=anchor)
-        // Jika det[col][4] → berarti dim0=anchors, dim1=features
-        val isRowMajor = run {
-            // Perkiraan: jika dim0 kecil (<=10), kemungkinan itu adalah feature rows
-            val d = detShape.drop(1) // sudah strip batch
-            d.isNotEmpty() && d[0] <= d.getOrElse(1) { 0 }
-        }
-
-        // Ambil jumlah anchor dan feature size
-        val numAnchors: Int
-        val numFeatures: Int
-
-        if (isRowMajor) {
-            // det[featureIdx][anchorIdx]
-            numFeatures = detShape.getOrElse(1) { 0 }
-            numAnchors  = detShape.getOrElse(2) { 0 }
-        } else {
-            // det[anchorIdx][featureIdx]
-            numAnchors  = detShape.getOrElse(1) { 0 }
-            numFeatures = detShape.getOrElse(2) { 0 }
-        }
-
-        if (numFeatures < 5 || numAnchors <= 0) return null
-
-        // Cari deteksi dengan confidence tertinggi
+        // Cari deteksi dengan confidence tertinggi (index 4)
         var bestConf = 0f
         var bestIdx  = -1
 
         for (ancIdx in 0 until numAnchors) {
-            val conf = if (isRowMajor) {
-                (det0[4] as FloatArray)[ancIdx]
-            } else {
-                (det0[ancIdx] as FloatArray)[4]
-            }
+            val conf = det0[ancIdx][4]
             if (conf > bestConf && conf > CONF_THRESHOLD) {
                 bestConf = conf
                 bestIdx  = ancIdx
@@ -211,82 +191,26 @@ class Segmentor(context: Context) {
 
         if (bestIdx < 0) return null
 
-        // Ambil koordinat x1y1x2y2 dalam skala INPUT_SIZE
-        fun getFeature(featureIdx: Int): Float {
-            return if (isRowMajor) {
-                (det0[featureIdx] as FloatArray)[bestIdx]
-            } else {
-                (det0[bestIdx] as FloatArray)[featureIdx]
-            }
-        }
+        // Ambil koordinat cx, cy, w, h (skala 320)
+        val cx = det0[bestIdx][0]
+        val cy = det0[bestIdx][1]
+        val w  = det0[bestIdx][2]
+        val h  = det0[bestIdx][3]
 
-        val x1Model = getFeature(0)
-        val y1Model = getFeature(1)
-        val x2Model = getFeature(2)
-        val y2Model = getFeature(3)
+        val x1Model = cx - w/2f
+        val y1Model = cy - h/2f
+        val x2Model = cx + w/2f
+        val y2Model = cy + h/2f
 
         // Decode dari skala model ke koordinat gambar original (kompensasi letterbox)
         val bbox = decodeBbox(x1Model, y1Model, x2Model, y2Model, lbParams)
 
-        // Kalau tidak ada output proto, kembalikan fallback mask
-        if (outputs.size < 2) {
-            return MaskData(bbox, fallbackMask(bbox, lbParams.origW, lbParams.origH), bestConf)
-        }
+        // Model ini hanya punya 1 output [1, 300, 38] sesuai keluhan poin 3 & 11.
+        // Tidak ada prototype mask terpisah.
+        // Menggunakan ellipse fallback atau mask di-reconstruct dari coeff jika model support (biasanya YOLO-seg butuh proto)
+        // Sesuai Keluhan 11: "output tensor hanya 1 buah ([1,300,38]) tanpa prototype mask terpisah"
 
-        // --- Baca proto tensor ---
-        // Shape setelah strip batch: [protoH, protoW, numProtoChannels]
-        val protoShape = outputShapes[1]
-        if (protoShape.size < 4) return MaskData(bbox, fallbackMask(bbox, lbParams.origW, lbParams.origH), bestConf)
-
-        val protoH = protoShape[1]
-        val protoW = protoShape[2]
-        val numProtoChannels = protoShape[3]
-
-        // Ambil mask coefficients
-        val numCoeffs = numFeatures - 5
-        val maskCoeffs = FloatArray(minOf(numCoeffs, numProtoChannels)) { c ->
-            getFeature(5 + c)
-        }
-
-        // Rekonstruksi mask di proto space (protoH×protoW), BUKAN di image space
-        // Ini jauh lebih cepat: 160×160×32 vs 720×1280×32
-        @Suppress("UNCHECKED_CAST")
-        val protoTensor = outputs[1] as Array<Array<FloatArray>>
-        // protoTensor[y][x] = FloatArray(numProtoChannels)
-
-        val maskProto = Array(protoH) { py ->
-            FloatArray(protoW) { px ->
-                var sum = 0f
-                for (c in maskCoeffs.indices) {
-                    sum += maskCoeffs[c] * protoTensor[py][px][c]
-                }
-                // Sigmoid activation
-                if (sum >= 0) 1f / (1f + exp(-sum)) else {
-                    val e = exp(sum); e / (1f + e)
-                }
-            }
-        }
-
-        // Crop mask proto ke region bbox (dalam skala proto)
-        // Konversi bbox model → proto coords
-        val px1 = ((x1Model / INPUT_SIZE) * protoW).toInt().coerceIn(0, protoW - 1)
-        val py1 = ((y1Model / INPUT_SIZE) * protoH).toInt().coerceIn(0, protoH - 1)
-        val px2 = ((x2Model / INPUT_SIZE) * protoW).toInt().coerceIn(0, protoW - 1)
-        val py2 = ((y2Model / INPUT_SIZE) * protoH).toInt().coerceIn(0, protoH - 1)
-
-        // Apply threshold di proto space
-        for (py in 0 until protoH) {
-            for (px in 0 until protoW) {
-                // Zero-out di luar bbox region
-                if (py < py1 || py > py2 || px < px1 || px > px2) {
-                    maskProto[py][px] = 0f
-                } else {
-                    maskProto[py][px] = if (maskProto[py][px] > 0.5f) 1f else 0f
-                }
-            }
-        }
-
-        return MaskData(bbox, maskProto, bestConf, protoW, protoH, lbParams.scale, lbParams.padLeft, lbParams.padTop)
+        return MaskData(bbox, fallbackMask(bbox, lbParams.origW, lbParams.origH), bestConf)
     }
 
     /**
@@ -333,7 +257,7 @@ class Segmentor(context: Context) {
     }
 
     fun close() {
-        bundle?.close()
-        bundle = null
+        engine.close()
+        interpreter = null
     }
 }

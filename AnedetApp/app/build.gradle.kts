@@ -85,14 +85,13 @@ dependencies {
     implementation(libs.camerax.compose)
 
     // TensorFlow Lite
-    implementation(libs.tflite)
-    implementation(libs.tflite.gpu) {
-        exclude(group = "org.tensorflow", module = "tensorflow-lite")
-    }
+    implementation(libs.tflite.play.java)
+    implementation(libs.tflite.play.gpu)
 
     // Coroutines
     implementation(libs.coroutines.core)
     implementation(libs.coroutines.android)
+    implementation(libs.coroutines.play)
 
     // Testing
     testImplementation(libs.junit)
