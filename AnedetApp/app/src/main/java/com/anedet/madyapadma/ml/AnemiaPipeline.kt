@@ -160,11 +160,30 @@ class AnemiaPipeline(
             canvas.drawBitmap(original, 0f, 0f, paint)
             paint.xfermode = null
 
-            // 5. Crop hasil akhirnya ke bounding box saja agar tidak terlalu banyak area hitam
-            cropConjunctiva(result, segResult.bbox)
+            // 5. Crop hasil akhirnya ke bounding box polygon (lebih ketat dari YOLO bbox)
+            //    Fallback ke YOLO bbox kalau polygon kosong.
+            val cropBox = if (segResult.polygon.size >= 3) {
+                computePolygonBbox(segResult.polygon)
+            } else {
+                segResult.bbox
+            }
+            cropConjunctiva(result, cropBox)
         } catch (e: Exception) {
             null
         }
+    }
+
+    /**
+     * Hitung bounding box dari daftar titik polygon.
+     * Titik polygon sudah dalam koordinat gambar original.
+     */
+    private fun computePolygonBbox(polygon: List<android.graphics.PointF>): RectF {
+        if (polygon.isEmpty()) return RectF()
+        val minX = polygon.minOf { it.x }
+        val minY = polygon.minOf { it.y }
+        val maxX = polygon.maxOf { it.x }
+        val maxY = polygon.maxOf { it.y }
+        return RectF(minX, minY, maxX, maxY)
     }
 
     /**

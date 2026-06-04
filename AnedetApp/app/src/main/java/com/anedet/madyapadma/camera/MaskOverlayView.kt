@@ -31,7 +31,7 @@ class MaskOverlayView @JvmOverloads constructor(
         alpha = 130
     }
     private val polygonPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(255, 76, 175, 80)
+        color = Color.YELLOW
         style = Paint.Style.STROKE
         strokeWidth = 5f
     }

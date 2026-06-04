@@ -215,7 +215,7 @@ private fun ResultContent(
                                     }
                                     drawPath(
                                         path = path,
-                                        color = Color(0xFF4CAF50),
+                                        color = Color(0xFFFFFF00),
                                         style = Stroke(width = 5f)
                                     )
                                 }
