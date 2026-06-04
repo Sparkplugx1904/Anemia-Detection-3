@@ -11,6 +11,7 @@ import android.graphics.ColorMatrixColorFilter
 import android.graphics.LightingColorFilter
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
 import android.graphics.RectF
@@ -101,7 +102,8 @@ class AnemiaPipeline(
                 nonAnemicProbability = nonAnemicProb,
                 maskOverlay = maskOverlay,
                 inferenceTimeMs = elapsed(startTime),
-                bbox = segResult.bbox
+                bbox = segResult.bbox,
+                polygon = segResult.polygon
             )
 
         } catch (e: Exception) {
@@ -194,7 +196,8 @@ class AnemiaPipeline(
      *   - Scale ke ukuran display menggunakan Matrix + Canvas — satu operasi GPU-accelerated
      *   - Jauh lebih cepat dari per-pixel drawPoint()
      *
-     * Hasilnya: Bitmap ARGB_8888 seukuran original dengan overlay hijau semi-transparan.
+     * Hasilnya: Bitmap ARGB_8888 seukuran original dengan overlay hijau semi-transparan
+     * + outline polygon konjungtiva.
      */
     private fun createMaskOverlay(original: Bitmap, segResult: MaskData): Bitmap? {
         return try {
@@ -236,18 +239,36 @@ class AnemiaPipeline(
             canvas.drawBitmap(maskBitmap, matrix, Paint(Paint.FILTER_BITMAP_FLAG))
             maskBitmap.recycle()
 
-            // 4. Gambar bbox rectangle dengan warna diagnosis
-            val bboxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.YELLOW
-                style = Paint.Style.STROKE
-                strokeWidth = max(3f, original.width / 350f)
+            // 4. Gambar outline polygon konjungtiva (bukan bbox rectangle).
+            //    Titik polygon sudah dalam koordinat gambar original.
+            if (segResult.polygon.size >= 3) {
+                val polyPath = polygonToPath(segResult.polygon)
+                val polyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = Color.YELLOW
+                    style = Paint.Style.STROKE
+                    strokeWidth = max(3f, original.width / 350f)
+                }
+                canvas.drawPath(polyPath, polyPaint)
             }
-            canvas.drawRect(segResult.bbox, bboxPaint)
 
             overlay
         } catch (e: Exception) {
             null
         }
+    }
+
+    /**
+     * Konversi daftar titik polygon menjadi android.graphics.Path tertutup.
+     */
+    private fun polygonToPath(points: List<android.graphics.PointF>): Path {
+        val path = Path()
+        if (points.isEmpty()) return path
+        path.moveTo(points[0].x, points[0].y)
+        for (i in 1 until points.size) {
+            path.lineTo(points[i].x, points[i].y)
+        }
+        path.close()
+        return path
     }
 
     /**

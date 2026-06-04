@@ -49,9 +49,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -192,8 +189,8 @@ private fun ResultContent(
                             }
                         }
                         MaskMode.BORDER -> {
-                            val bbox = prediction.bbox
-                            if (bbox != null) {
+                            val polygon = prediction.polygon
+                            if (polygon.size >= 3) {
                                 val bw = bitmap.width.toFloat()
                                 val bh = bitmap.height.toFloat()
                                 Canvas(modifier = Modifier.fillMaxSize()) {
@@ -202,17 +199,23 @@ private fun ResultContent(
                                     val dispH = bh * s
                                     val offX = (size.width - dispW) / 2f
                                     val offY = (size.height - dispH) / 2f
-                                    drawRoundRect(
-                                        color = Color(0xFFFFC107),
-                                        topLeft = Offset(
-                                            offX + bbox.left * s,
-                                            offY + bbox.top * s
-                                        ),
-                                        size = Size(
-                                            bbox.width() * s,
-                                            bbox.height() * s
-                                        ),
-                                        cornerRadius = CornerRadius(12f, 12f),
+                                    val path = androidx.compose.ui.graphics.Path().apply {
+                                        val first = polygon.first()
+                                        moveTo(
+                                            offX + first.x * s,
+                                            offY + first.y * s
+                                        )
+                                        for (i in 1 until polygon.size) {
+                                            lineTo(
+                                                offX + polygon[i].x * s,
+                                                offY + polygon[i].y * s
+                                            )
+                                        }
+                                        close()
+                                    }
+                                    drawPath(
+                                        path = path,
+                                        color = Color(0xFF4CAF50),
                                         style = Stroke(width = 5f)
                                     )
                                 }

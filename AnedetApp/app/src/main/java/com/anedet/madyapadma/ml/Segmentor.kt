@@ -3,6 +3,7 @@ package com.anedet.madyapadma.ml
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.PointF
 import android.graphics.RectF
 import android.util.Log
 import com.anedet.madyapadma.model.MaskData
@@ -188,6 +189,8 @@ class Segmentor(private val context: Context) {
         val mw = if (protoShape[1] != 32) protoShape[2] else protoShape[3]
         val mh = if (protoShape[1] != 32) protoShape[1] else protoShape[2]
 
+        val polygon = extractPolygon(mask, mw, mh, lbParams)
+
         return MaskData(
             bbox = bbox,
             mask = mask,
@@ -196,8 +199,65 @@ class Segmentor(private val context: Context) {
             protoH = mh,
             lbScale = lbParams.scale,
             lbPadLeft = lbParams.padLeft,
-            lbPadTop = lbParams.padTop
+            lbPadTop = lbParams.padTop,
+            polygon = polygon
         )
+    }
+
+    /**
+     * Ekstrak polygon dari binary mask.
+     *
+     * Strategi: row-scan contour tracing — untuk setiap baris mask, temukan piksel
+     * mask paling kiri dan paling kanan, lalu bangun polygon:
+     *   - sisi kiri: dari atas ke bawah
+     *   - sisi kanan: dari bawah ke atas
+     *
+     * Pendekatan ini cocok untuk bentuk konjungtiva (umumnya konveks/elips) dan
+     * merupakan padanan sederhana dari `cv2.findContours(..., RETR_EXTERNAL)` yang
+     * dipakai di `verify_polygon.py:101` — hanya boundary terluar yang diambil.
+     *
+     * Titik hasil diproyeksikan ke koordinat gambar original (kompensasi letterbox).
+     */
+    private fun extractPolygon(
+        mask: Array<FloatArray>,
+        protoW: Int,
+        protoH: Int,
+        lb: LetterboxParams
+    ): List<PointF> {
+        if (mask.isEmpty() || mask[0].isEmpty()) return emptyList()
+        val h = mask.size
+        val w = mask[0].size
+        if (w == 0 || h == 0) return emptyList()
+
+        val isMaskProto = (w == protoW && h == protoH)
+        val scaleX = if (isMaskProto) INPUT_SIZE.toFloat() / protoW else 1f
+        val scaleY = if (isMaskProto) INPUT_SIZE.toFloat() / protoH else 1f
+        val invScale = 1f / lb.scale
+
+        val polygon = ArrayList<PointF>()
+        // Sisi kiri — scan top-down
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                if (mask[y][x] > 0.5f) {
+                    val mx = x * scaleX
+                    val my = y * scaleY
+                    polygon.add(PointF((mx - lb.padLeft) * invScale, (my - lb.padTop) * invScale))
+                    break
+                }
+            }
+        }
+        // Sisi kanan — scan bottom-up
+        for (y in h - 1 downTo 0) {
+            for (x in w - 1 downTo 0) {
+                if (mask[y][x] > 0.5f) {
+                    val mx = x * scaleX
+                    val my = y * scaleY
+                    polygon.add(PointF((mx - lb.padLeft) * invScale, (my - lb.padTop) * invScale))
+                    break
+                }
+            }
+        }
+        return polygon
     }
 
     private fun computeProtoMask(

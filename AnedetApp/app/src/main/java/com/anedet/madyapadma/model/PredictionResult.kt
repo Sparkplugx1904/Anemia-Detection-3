@@ -1,6 +1,7 @@
 package com.anedet.madyapadma.model
 
 import android.graphics.Bitmap
+import android.graphics.PointF
 import android.graphics.RectF
 
 /**
@@ -24,7 +25,8 @@ data class PredictionResult(
     val maskOverlay: Bitmap?,
     val inferenceTimeMs: Long,
     val error: String? = null,
-    val bbox: RectF? = null
+    val bbox: RectF? = null,
+    val polygon: List<PointF> = emptyList()
 ) {
     /** Nilai keyakinan = probabilitas kelas pemenang. */
     val confidence: Float

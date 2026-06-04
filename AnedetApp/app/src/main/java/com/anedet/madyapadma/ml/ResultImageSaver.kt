@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.os.Build
 import android.provider.MediaStore
 import com.anedet.madyapadma.model.PredictionResult
@@ -17,28 +18,34 @@ object ResultImageSaver {
         val bitmap = original.copy(Bitmap.Config.ARGB_8888, true)
         val canvas = Canvas(bitmap)
 
-        // 1. Draw filled ellipse (semi-transparent green) for the conjunctiva region
-        result.bbox?.let { bbox ->
+        // 1. Gambar polygon konjungtiva: fill hijau semi-transparan + stroke warna diagnosis
+        if (result.polygon.size >= 3) {
+            val polyPath = polygonToPath(result.polygon)
+
             val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.argb(140, 76, 175, 80)
+                color = Color.argb(110, 76, 175, 80)
                 style = Paint.Style.FILL
             }
-            val cx = bbox.centerX()
-            val cy = bbox.centerY()
-            val rx = bbox.width()  / 2f
-            val ry = bbox.height() / 2f
-            canvas.drawOval(cx - rx, cy - ry, cx + rx, cy + ry, fillPaint)
+            canvas.drawPath(polyPath, fillPaint)
+
+            val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = if (result.isAnemic) Color.RED else Color.GREEN
+                style = Paint.Style.STROKE
+                strokeWidth = 10f
+            }
+            canvas.drawPath(polyPath, strokePaint)
+        } else if (result.bbox != null) {
+            // Fallback: kalau polygon tidak tersedia (mis. deteksi gagal),
+            // gambar bbox agar user tetap punya indikator visual.
+            val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = if (result.isAnemic) Color.RED else Color.GREEN
+                style = Paint.Style.STROKE
+                strokeWidth = 10f
+            }
+            canvas.drawRect(result.bbox, strokePaint)
         }
 
-        // 2. Draw BBox outline
-        val bboxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = if (result.isAnemic) Color.RED else Color.GREEN
-            style = Paint.Style.STROKE
-            strokeWidth = 10f
-        }
-        result.bbox?.let { canvas.drawRect(it, bboxPaint) }
-
-        // 3. Draw label + confidence
+        // 2. Label + confidence
         val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.WHITE
             textSize = 64f
@@ -63,8 +70,19 @@ object ResultImageSaver {
             padding, 130f, infoPaint
         )
 
-        // 4. Save to MediaStore
+        // 3. Save to MediaStore
         return saveToGallery(context, bitmap)
+    }
+
+    private fun polygonToPath(points: List<android.graphics.PointF>): Path {
+        val path = Path()
+        if (points.isEmpty()) return path
+        path.moveTo(points[0].x, points[0].y)
+        for (i in 1 until points.size) {
+            path.lineTo(points[i].x, points[i].y)
+        }
+        path.close()
+        return path
     }
 
     private fun saveToGallery(context: Context, bitmap: Bitmap): Boolean {
