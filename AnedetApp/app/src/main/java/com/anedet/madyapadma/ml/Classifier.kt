@@ -3,7 +3,7 @@ package com.anedet.madyapadma.ml
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
-import org.tensorflow.lite.InterpreterApi
+import org.tensorflow.lite.Interpreter
 import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -40,8 +40,7 @@ class Classifier(private val context: Context) {
         private const val GAMMA_MAX  = 1.2f
     }
 
-    private var engine: TfLiteEngine = TfLiteEngine(context)
-    private var interpreter: InterpreterApi? = null
+    private var interpreter: Interpreter? = null
 
     // Pre-allocated buffer
     private val inputBuffer: ByteBuffer = ByteBuffer
@@ -50,9 +49,12 @@ class Classifier(private val context: Context) {
 
     suspend fun initialize() {
         if (interpreter != null) return
-        engine.initialize()
         val modelBuffer = loadModelFile(this.context, MODEL_PATH)
-        interpreter = engine.createInterpreter(modelBuffer, useGpu = true)
+        val options = Interpreter.Options().apply {
+            setNumThreads(4)
+            setUseXNNPACK(true)
+        }
+        interpreter = Interpreter(modelBuffer, options)
     }
 
     /**
@@ -447,7 +449,7 @@ class Classifier(private val context: Context) {
     }
 
     fun close() {
-        engine.close()
+        interpreter?.close()
         interpreter = null
     }
 }

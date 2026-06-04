@@ -5,7 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.RectF
 import com.anedet.madyapadma.model.MaskData
-import org.tensorflow.lite.InterpreterApi
+import org.tensorflow.lite.Interpreter
 import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -24,8 +24,7 @@ class Segmentor(private val context: Context) {
         private const val LETTERBOX_FILL = 0.5f
     }
 
-    private var engine: TfLiteEngine = TfLiteEngine(context)
-    private var interpreter: InterpreterApi? = null
+    private var interpreter: Interpreter? = null
     private var outputShapes = listOf<IntArray>()
 
     private val lock = Any()
@@ -46,9 +45,12 @@ class Segmentor(private val context: Context) {
 
     suspend fun initialize() {
         if (interpreter != null) return
-        engine.initialize()
         val modelBuffer = loadModelFile(this.context, MODEL_PATH)
-        interpreter = engine.createInterpreter(modelBuffer, useGpu = true)
+        val options = Interpreter.Options().apply {
+            setNumThreads(4)
+            setUseXNNPACK(true)
+        }
+        interpreter = Interpreter(modelBuffer, options)
 
         val interp = interpreter ?: throw RuntimeException("Failed to create interpreter")
         val numOutputs = interp.outputTensorCount
@@ -171,9 +173,25 @@ class Segmentor(private val context: Context) {
     private fun parseOutput(outputs: List<Array<Any>>, lbParams: LetterboxParams): MaskData? {
         if (outputs.isEmpty()) return null
 
-        val det0 = outputs[0] as Array<FloatArray> // [300][38]
-        val numAnchors = det0.size
-        val numFeatures = det0[0].size
+        val det0 = outputs[0] as Array<FloatArray> // output tensor layout
+        val dim1 = det0.size
+        val dim2 = det0[0].size
+
+        val numFeatures: Int
+        val numAnchors: Int
+        val isColumnMajor: Boolean
+
+        if (dim1 < dim2) {
+            // Column-major layout (e.g. [38][300]): det0[feature][anchor]
+            numFeatures = dim1
+            numAnchors = dim2
+            isColumnMajor = true
+        } else {
+            // Row-major layout (e.g. [300][38]): det0[anchor][feature]
+            numFeatures = dim2
+            numAnchors = dim1
+            isColumnMajor = false
+        }
 
         if (numFeatures < 38 || numAnchors == 0) return null
 
@@ -182,7 +200,7 @@ class Segmentor(private val context: Context) {
         var bestIdx  = -1
 
         for (ancIdx in 0 until numAnchors) {
-            val conf = det0[ancIdx][4]
+            val conf = if (isColumnMajor) det0[4][ancIdx] else det0[ancIdx][4]
             if (conf > bestConf && conf > CONF_THRESHOLD) {
                 bestConf = conf
                 bestIdx  = ancIdx
@@ -192,10 +210,10 @@ class Segmentor(private val context: Context) {
         if (bestIdx < 0) return null
 
         // Ambil koordinat cx, cy, w, h (skala 320)
-        val cx = det0[bestIdx][0]
-        val cy = det0[bestIdx][1]
-        val w  = det0[bestIdx][2]
-        val h  = det0[bestIdx][3]
+        val cx = if (isColumnMajor) det0[0][bestIdx] else det0[bestIdx][0]
+        val cy = if (isColumnMajor) det0[1][bestIdx] else det0[bestIdx][1]
+        val w  = if (isColumnMajor) det0[2][bestIdx] else det0[bestIdx][2]
+        val h  = if (isColumnMajor) det0[3][bestIdx] else det0[bestIdx][3]
 
         val x1Model = cx - w/2f
         val y1Model = cy - h/2f
@@ -205,11 +223,9 @@ class Segmentor(private val context: Context) {
         // Decode dari skala model ke koordinat gambar original (kompensasi letterbox)
         val bbox = decodeBbox(x1Model, y1Model, x2Model, y2Model, lbParams)
 
-        // Model ini hanya punya 1 output [1, 300, 38] sesuai keluhan poin 3 & 11.
+        // Model ini hanya punya 1 output [1, 300, 38] atau [1, 38, 300] sesuai keluhan poin 3 & 11.
         // Tidak ada prototype mask terpisah.
-        // Menggunakan ellipse fallback atau mask di-reconstruct dari coeff jika model support (biasanya YOLO-seg butuh proto)
-        // Sesuai Keluhan 11: "output tensor hanya 1 buah ([1,300,38]) tanpa prototype mask terpisah"
-
+        // Menggunakan ellipse fallback atau mask di-reconstruct dari coeff jika model support
         return MaskData(bbox, fallbackMask(bbox, lbParams.origW, lbParams.origH), bestConf)
     }
 
@@ -257,7 +273,7 @@ class Segmentor(private val context: Context) {
     }
 
     fun close() {
-        engine.close()
+        interpreter?.close()
         interpreter = null
     }
 }

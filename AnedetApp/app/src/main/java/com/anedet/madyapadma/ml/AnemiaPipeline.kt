@@ -18,6 +18,7 @@ import com.anedet.madyapadma.model.MaskData
 import com.anedet.madyapadma.model.PredictionResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlin.math.max
 
 class AnemiaPipeline(private val context: Context) {
 
@@ -153,42 +154,37 @@ class AnemiaPipeline(private val context: Context) {
             val maskW = if (maskH > 0) mask[0].size else 0
             if (maskW == 0) return null
 
-            // 1. Buat Bitmap kecil dari mask (ARGB_8888 agar bisa set alpha per pixel)
-            val maskBitmap = Bitmap.createBitmap(maskW, maskH, Bitmap.Config.ARGB_8888)
-            val maskColor = Color.argb(180, 76, 175, 80)   // hijau semi-transparan
-            val transparent = Color.TRANSPARENT
-            for (y in 0 until maskH) {
-                for (x in 0 until maskW) {
-                    maskBitmap.setPixel(x, y, if (mask[y][x] > 0.5f) maskColor else transparent)
-                }
-            }
-
-            // 2. Buat overlay bitmap seukuran original
+            // 1. Buat overlay bitmap seukuran original (langsung gambar di sini)
             val overlay = original.copy(Bitmap.Config.ARGB_8888, true)
             val canvas = Canvas(overlay)
 
-            // 3. Hitung Matrix untuk scale mask ke ukuran original (kompensasi letterbox)
-            val matrix = if (segResult.isProtoSpace) {
-                buildMaskMatrix(
-                    maskW = maskW, maskH = maskH,
-                    protoW = segResult.protoW, protoH = segResult.protoH,
-                    imgW = original.width, imgH = original.height,
-                    lbScale = segResult.lbScale,
-                    lbPadLeft = segResult.lbPadLeft, lbPadTop = segResult.lbPadTop
-                )
-            } else {
-                // Mask sudah di image space, scale langsung
-                Matrix().apply {
-                    setScale(
-                        original.width.toFloat()  / maskW,
-                        original.height.toFloat() / maskH
-                    )
-                }
+            // 2. Gambar filled ellipse mask (semi-transparan hijau) langsung pada overlay
+            val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.argb(140, 76, 175, 80)
+                style = Paint.Style.FILL
             }
+            val bbox = segResult.bbox
+            val cx = bbox.centerX()
+            val cy = bbox.centerY()
+            val rx = bbox.width()  / 2f
+            val ry = bbox.height() / 2f
+            canvas.drawOval(cx - rx, cy - ry, cx + rx, cy + ry, fillPaint)
 
-            val paint = Paint(Paint.FILTER_BITMAP_FLAG)
-            canvas.drawBitmap(maskBitmap, matrix, paint)
-            maskBitmap.recycle()
+            // 3. Gambar stroke ellipse agar lebih jelas
+            val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.argb(255, 27, 94, 32)   // dark green stroke
+                style = Paint.Style.STROKE
+                strokeWidth = max(4f, original.width / 250f)
+            }
+            canvas.drawOval(cx - rx, cy - ry, cx + rx, cy + ry, strokePaint)
+
+            // 4. Gambar bbox rectangle dengan warna diagnosis
+            val bboxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.YELLOW
+                style = Paint.Style.STROKE
+                strokeWidth = max(3f, original.width / 350f)
+            }
+            canvas.drawRect(bbox, bboxPaint)
 
             overlay
         } catch (e: Exception) {

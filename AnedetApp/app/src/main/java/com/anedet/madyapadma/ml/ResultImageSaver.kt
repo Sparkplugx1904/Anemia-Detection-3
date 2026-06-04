@@ -6,7 +6,6 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.RectF
 import android.os.Build
 import android.provider.MediaStore
 import com.anedet.madyapadma.model.PredictionResult
@@ -18,34 +17,53 @@ object ResultImageSaver {
         val bitmap = original.copy(Bitmap.Config.ARGB_8888, true)
         val canvas = Canvas(bitmap)
 
-        // 1. Draw mask
-        result.maskOverlay?.let { mask ->
-            val paint = Paint().apply { alpha = 128 }
-            canvas.drawBitmap(mask, 0f, 0f, paint)
+        // 1. Draw filled ellipse (semi-transparent green) for the conjunctiva region
+        result.bbox?.let { bbox ->
+            val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.argb(140, 76, 175, 80)
+                style = Paint.Style.FILL
+            }
+            val cx = bbox.centerX()
+            val cy = bbox.centerY()
+            val rx = bbox.width()  / 2f
+            val ry = bbox.height() / 2f
+            canvas.drawOval(cx - rx, cy - ry, cx + rx, cy + ry, fillPaint)
         }
 
-        // 2. Draw BBox and Label
-        val paint = Paint().apply {
+        // 2. Draw BBox outline
+        val bboxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = if (result.isAnemic) Color.RED else Color.GREEN
             style = Paint.Style.STROKE
-            strokeWidth = 8f
+            strokeWidth = 10f
         }
+        result.bbox?.let { canvas.drawRect(it, bboxPaint) }
 
-        result.bbox?.let { canvas.drawRect(it, paint) }
-
-        val textPaint = Paint().apply {
+        // 3. Draw label + confidence
+        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.WHITE
             textSize = 64f
             isFakeBoldText = true
-            setShadowLayer(5f, 0f, 0f, Color.BLACK)
+            setShadowLayer(5f, 1f, 1f, Color.BLACK)
         }
+        val label = if (result.isAnemic)
+            "ANEMIC (${"%.1f".format(result.anemicProbability * 100)}%)"
+        else
+            "NON-ANEMIC (${"%.1f".format(result.nonAnemicProbability * 100)}%)"
 
-        val label = if (result.isAnemic) "ANEMIC (${(result.anemicProbability*100).toInt()}%)"
-                    else "NON-ANEMIC (${(result.nonAnemicProbability*100).toInt()}%)"
+        val padding = 16f
+        canvas.drawText(label, padding, 80f, textPaint)
 
-        canvas.drawText(label, 50f, 100f, textPaint)
+        val infoPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            textSize = 40f
+            setShadowLayer(3f, 1f, 1f, Color.BLACK)
+        }
+        canvas.drawText(
+            "Confidence: ${"%.1f".format(result.confidence * 100)}%   Margin: ${"%.1f".format(result.margin * 100)}%",
+            padding, 130f, infoPaint
+        )
 
-        // 3. Save to MediaStore
+        // 4. Save to MediaStore
         return saveToGallery(context, bitmap)
     }
 
@@ -63,7 +81,7 @@ object ResultImageSaver {
         return uri?.let {
             val outputStream: OutputStream? = context.contentResolver.openOutputStream(it)
             outputStream?.use { stream ->
-                bitmap.compress(Bitmap.CompressFormat.JPEG, 90, stream)
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 92, stream)
             }
             true
         } ?: false
