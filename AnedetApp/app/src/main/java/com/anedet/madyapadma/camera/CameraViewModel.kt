@@ -7,6 +7,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.anedet.madyapadma.ml.AnemiaPipeline
 import com.anedet.madyapadma.ml.ResultImageSaver
+import com.anedet.madyapadma.ml.Segmentor
 import com.anedet.madyapadma.model.MaskData
 import com.anedet.madyapadma.model.PredictionResult
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -19,7 +20,10 @@ import kotlinx.coroutines.launch
 
 class CameraViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val pipeline = AnemiaPipeline(application)
+    // Satu instance Segmentor yang dipakai bersama oleh live preview
+    // dan AnemiaPipeline — hindari loading model yang sama 2x
+    val segmentor = Segmentor(application)
+    val pipeline = AnemiaPipeline(application, segmentor)
     val settings = AppSettings(application)
 
     private val _predictionResult = MutableStateFlow<PredictionResult?>(null)
@@ -81,6 +85,9 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     fun analyzeImage(imagePath: String) {
         viewModelScope.launch {
+            // Reset state sebelumnya agar UI tidak menampilkan result lama
+            // saat loading baru dimulai (mencegah stuck loading)
+            _predictionResult.value = null
             _isAnalyzing.value = true
             pipeline.initialize()
             val result = pipeline.analyze(imagePath)

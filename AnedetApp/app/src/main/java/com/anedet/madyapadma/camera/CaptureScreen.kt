@@ -5,7 +5,6 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.util.Log
-import android.view.ViewGroup
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -59,6 +58,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -67,13 +67,14 @@ import androidx.lifecycle.compose.LocalLifecycleOwner as ComposeLifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.anedet.madyapadma.R
-import com.anedet.madyapadma.ml.Segmentor
 import com.anedet.madyapadma.model.MaskData
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 @Composable
@@ -85,7 +86,7 @@ fun CaptureScreen(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = ComposeLifecycleOwner.current
-    var isCapturing by remember { mutableStateOf(false) }
+    val isCapturing = remember { AtomicBoolean(false) }
     var torchEnabled by remember { mutableStateOf(false) }
     var cameraRef by remember { mutableStateOf<Camera?>(null) }
     var hasCameraPermission by remember {
@@ -104,52 +105,43 @@ fun CaptureScreen(
         }
     }
 
-    val executor = remember { ContextCompat.getMainExecutor(context) }
+    val mainExecutor = remember { ContextCompat.getMainExecutor(context) }
+    val analyzerExecutor = remember { Executors.newSingleThreadExecutor() }
     val imageCaptureRef = remember { AtomicReference<ImageCapture?>() }
-    val imageAnalysisRef = remember { AtomicReference<ImageAnalysis?>() }
-    val overlayViewRef = remember { AtomicReference<MaskOverlayView?>() }
-    val previewViewRef = remember { AtomicReference<PreviewView?>() }
+    var overlayView by remember { mutableStateOf<MaskOverlayView?>(null) }
 
-    val segmentor = remember { Segmentor(context) }
-
+    val segmentor = remember(viewModel) { viewModel.segmentor }
     val autoCaptureStatus by viewModel.autoCaptureStatus.collectAsState()
     val autoCaptureProgress by viewModel.autoCaptureProgress.collectAsState()
     val autoCaptureEnabled by viewModel.settings.smartAutoCapture.collectAsState()
 
-    val liveMask by viewModel.lastLiveMask.collectAsState()
-    val liveImgW by viewModel.liveImageW.collectAsState()
-    val liveImgH by viewModel.liveImageH.collectAsState()
-
-    // Stability tracking
     val stabilityState = remember { StabilityTracker() }
+
     LaunchedEffect(Unit) {
-        // Preload interpreter
         withContext(Dispatchers.Default) { segmentor.initialize() }
     }
 
-    // Capture dir for auto-capture requests
     val captureDir = remember { context.cacheDir.absolutePath }
 
-    // Listen to auto-capture events
     LaunchedEffect(Unit) {
         viewModel.autoCaptureRequests.collectLatest { _ ->
-            if (isCapturing) return@collectLatest
+            if (isCapturing.get()) return@collectLatest
             val ic = imageCaptureRef.get() ?: return@collectLatest
-            isCapturing = true
+            isCapturing.set(true)
             viewModel.reportAutoCaptureStatus("capturing")
             val file = File(context.cacheDir, "capture_${System.currentTimeMillis()}.jpg")
             val outputOptions = ImageCapture.OutputFileOptions.Builder(file).build()
             ic.takePicture(
                 outputOptions,
-                executor,
+                mainExecutor,
                 object : ImageCapture.OnImageSavedCallback {
                     override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                        isCapturing = false
+                        isCapturing.set(false)
                         stabilityState.reset()
                         onResult(file.absolutePath)
                     }
                     override fun onError(exception: ImageCaptureException) {
-                        isCapturing = false
+                        isCapturing.set(false)
                         Toast.makeText(context, "Capture failed: ${exception.message}", Toast.LENGTH_SHORT).show()
                     }
                 }
@@ -175,14 +167,9 @@ fun CaptureScreen(
                 factory = { ctx ->
                     val previewView = PreviewView(ctx).apply {
                         scaleType = PreviewView.ScaleType.FILL_CENTER
-                        layoutParams = ViewGroup.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.MATCH_PARENT
-                        )
                     }
-                    previewViewRef.set(previewView)
                     val overlay = MaskOverlayView(ctx)
-                    overlayViewRef.set(overlay)
+                    overlayView = overlay
 
                     val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
                     cameraProviderFuture.addListener({
@@ -201,9 +188,15 @@ fun CaptureScreen(
                             .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                             .setTargetRotation(previewView.display?.rotation ?: android.view.Surface.ROTATION_0)
                             .build()
-                        imageAnalysisRef.set(imageAnalysis)
 
-                        imageAnalysis.setAnalyzer(executor) { imageProxy ->
+                        val isProcessing = AtomicBoolean(false)
+
+                        imageAnalysis.setAnalyzer(analyzerExecutor) { imageProxy ->
+                            if (isProcessing.get()) {
+                                imageProxy.close()
+                                return@setAnalyzer
+                            }
+                            
                             val rotation = imageProxy.imageInfo.rotationDegrees
                             val srcBitmap: Bitmap? = try {
                                 imageProxy.toBitmap()
@@ -214,48 +207,60 @@ fun CaptureScreen(
                             imageProxy.close()
                             if (srcBitmap == null) return@setAnalyzer
 
-                            lifecycleOwner.lifecycleScope.launch(Dispatchers.Default) {
-                                val bitmap: Bitmap = try {
-                                    if (rotation != 0) {
-                                        val matrix = Matrix().apply { postRotate(rotation.toFloat()) }
-                                        val rotated = Bitmap.createBitmap(
-                                            srcBitmap, 0, 0,
-                                            srcBitmap.width, srcBitmap.height, matrix, true
-                                        )
-                                        if (rotated !== srcBitmap) srcBitmap.recycle()
-                                        rotated
-                                    } else {
-                                        srcBitmap
-                                    }
-                                } catch (e: Exception) {
-                                    Log.e(TAG, "rotate failed: ${e.message}")
-                                    srcBitmap.recycle()
-                                    return@launch
+                            isProcessing.set(true)
+                            try {
+                                if (!segmentor.isReady()) {
+                                    kotlinx.coroutines.runBlocking { segmentor.initialize() }
+                                }
+
+                                val bitmap: Bitmap = if (rotation != 0) {
+                                    val matrix = Matrix().apply { postRotate(rotation.toFloat()) }
+                                    val rotated = Bitmap.createBitmap(
+                                        srcBitmap, 0, 0,
+                                        srcBitmap.width, srcBitmap.height, matrix, true
+                                    )
+                                    if (rotated !== srcBitmap) srcBitmap.recycle()
+                                    rotated
+                                } else {
+                                    srcBitmap
                                 }
 
                                 val result: MaskData? = segmentor.runSegmentation(bitmap)
 
-                                withContext(Dispatchers.Main) {
-                                    val ov = overlayViewRef.get()
-                                    if (ov != null) {
-                                        if (result != null && result.confidence >= viewModel.settings.confidenceThreshold.value) {
-                                            ov.setMaskData(result, bitmap.width, bitmap.height, 0)
-                                        } else {
-                                            ov.setMaskData(null, bitmap.width, bitmap.height, 0)
+                                // 4. Create mask bitmap on background thread
+                                var maskBmp: Bitmap? = null
+                                if (result != null && result.confidence >= viewModel.settings.confidenceThreshold.value) {
+                                    val mw = result.protoW; val mh = result.protoH
+                                    if (mw > 0 && mh > 0) {
+                                        val bmp = Bitmap.createBitmap(mw, mh, Bitmap.Config.ARGB_8888)
+                                        val pixels = IntArray(mw * mh)
+                                        for (y in 0 until mh) {
+                                            for (x in 0 until mw) {
+                                                val alpha = if (result.mask[y][x] > 0.5f) 160 else 0
+                                                pixels[y * mw + x] = android.graphics.Color.argb(alpha, 76, 175, 80)
+                                            }
                                         }
+                                        bmp.setPixels(pixels, 0, mw, 0, 0, mw, mh)
+                                        maskBmp = bmp
                                     }
-                                    viewModel.updateLiveMask(
-                                        if (result != null && result.confidence >= viewModel.settings.confidenceThreshold.value) result else null,
-                                        bitmap.width, bitmap.height
-                                    )
+                                }
 
-                                    // Smart auto-capture: stability + sharpness check
-                                    if (autoCaptureEnabled && result != null && !isCapturing) {
-                                        val okConf = result.confidence >= viewModel.settings.confidenceThreshold.value
+                                // Post UI updates to Main Thread
+                                mainExecutor.execute {
+                                    val confThreshold = viewModel.settings.confidenceThreshold.value
+                                    val finalResult = if (result != null && result.confidence >= confThreshold) result else null
+                                    
+                                    overlayView?.setMaskData(finalResult, maskBmp, bitmap.width, bitmap.height, 0)
+                                    viewModel.updateLiveMask(finalResult, bitmap.width, bitmap.height)
+
+                                    val autoCap = viewModel.settings.smartAutoCapture.value
+                                    if (autoCap && result != null && !isCapturing.get()) {
+                                        val okConf = result.confidence >= confThreshold
                                         val sharpness = ImageQualityUtils.calculateBlurriness(bitmap)
                                         val sharpOk = sharpness >= viewModel.settings.sharpnessMin.value
                                         val sizeOk = (result.bbox.width() * result.bbox.height()) >=
-                                            (bitmap.width * bitmap.height) * 0.01f
+                                                (bitmap.width * bitmap.height) * 0.01f
+                                        
                                         val stable = stabilityState.update(
                                             detected = okConf && sharpOk && sizeOk,
                                             stabilityNeeded = viewModel.settings.stabilityFrames.value
@@ -286,11 +291,15 @@ fun CaptureScreen(
                                                 )
                                             }
                                         }
-                                    } else if (!autoCaptureEnabled) {
+                                    } else if (!autoCap) {
                                         viewModel.reportAutoCaptureStatus("searching", 0)
                                     }
+                                    bitmap.recycle()
                                 }
-                                bitmap.recycle()
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Analyzer error: ${e.message}")
+                            } finally {
+                                isProcessing.set(false)
                             }
                         }
 
@@ -303,21 +312,18 @@ fun CaptureScreen(
                             imageAnalysis
                         )
                         cameraRef = camera
-                    }, executor)
+                    }, mainExecutor)
 
                     previewView
                 },
                 modifier = Modifier.fillMaxSize()
             )
 
-            overlayViewRef.get()?.let { overlay ->
-                AndroidView(
-                    factory = { overlay },
-                    modifier = Modifier.fillMaxSize()
-                )
+            overlayView?.let { overlay ->
+                AndroidView(factory = { overlay }, modifier = Modifier.fillMaxSize())
             }
 
-            // Top-left: drawer menu
+            // UI Buttons (Drawer, Settings, Flash)
             IconButton(
                 onClick = onOpenDrawer,
                 modifier = Modifier
@@ -327,15 +333,9 @@ fun CaptureScreen(
                     .background(Color.Black.copy(alpha = 0.4f), CircleShape)
                     .clip(CircleShape)
             ) {
-                Icon(
-                    imageVector = Icons.Default.Menu,
-                    contentDescription = "Menu",
-                    tint = Color.White,
-                    modifier = Modifier.size(26.dp)
-                )
+                Icon(Icons.Default.Menu, contentDescription = "Menu", tint = Color.White)
             }
 
-            // Top: settings (open settings screen)
             IconButton(
                 onClick = onSettings,
                 modifier = Modifier
@@ -345,15 +345,9 @@ fun CaptureScreen(
                     .background(Color.Black.copy(alpha = 0.4f), CircleShape)
                     .clip(CircleShape)
             ) {
-                Icon(
-                    imageVector = Icons.Default.Settings,
-                    contentDescription = "Settings",
-                    tint = Color.White,
-                    modifier = Modifier.size(26.dp)
-                )
+                Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.White)
             }
 
-            // Top-right: flashlight
             IconButton(
                 onClick = {
                     torchEnabled = !torchEnabled
@@ -368,47 +362,36 @@ fun CaptureScreen(
             ) {
                 Icon(
                     imageVector = if (torchEnabled) Icons.Default.FlashOn else Icons.Default.FlashOff,
-                    contentDescription = if (torchEnabled) "Torch on" else "Torch off",
-                    tint = if (torchEnabled) Color(0xFFFFD600) else Color.White,
-                    modifier = Modifier.size(26.dp)
+                    contentDescription = "Flash",
+                    tint = if (torchEnabled) Color(0xFFFFD600) else Color.White
                 )
             }
 
-            // Auto-capture status banner
             AnimatedVisibility(
                 visible = autoCaptureEnabled,
-                enter = fadeIn(),
-                exit = fadeOut(),
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 110.dp)
+                enter = fadeIn(), exit = fadeOut(),
+                modifier = Modifier.align(Alignment.TopCenter).padding(top = 110.dp)
             ) {
-                AutoCaptureBanner(
-                    status = autoCaptureStatus,
-                    progress = autoCaptureProgress
-                )
+                AutoCaptureBanner(status = autoCaptureStatus, progress = autoCaptureProgress)
             }
 
-            // Bottom capture button
             IconButton(
                 onClick = {
-                    if (isCapturing) return@IconButton
+                    if (isCapturing.get()) return@IconButton
                     val ic = imageCaptureRef.get() ?: return@IconButton
-                    isCapturing = true
+                    isCapturing.set(true)
                     viewModel.reportAutoCaptureStatus("capturing")
                     val file = File(context.cacheDir, "capture_${System.currentTimeMillis()}.jpg")
                     val outputOptions = ImageCapture.OutputFileOptions.Builder(file).build()
                     ic.takePicture(
                         outputOptions,
-                        executor,
+                        mainExecutor,
                         object : ImageCapture.OnImageSavedCallback {
                             override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                                isCapturing = false
-                                stabilityState.reset()
-                                onResult(file.absolutePath)
+                                isCapturing.set(false); stabilityState.reset(); onResult(file.absolutePath)
                             }
                             override fun onError(exception: ImageCaptureException) {
-                                isCapturing = false
+                                isCapturing.set(false)
                                 Toast.makeText(context, "Capture failed: ${exception.message}", Toast.LENGTH_SHORT).show()
                             }
                         }
@@ -420,23 +403,13 @@ fun CaptureScreen(
                     .size(72.dp)
                     .background(Color(0xFF9C27B0), RoundedCornerShape(20.dp))
                     .clip(RoundedCornerShape(20.dp)),
-                enabled = !isCapturing
+                enabled = !isCapturing.get()
             ) {
-                Icon(
-                    imageVector = Icons.Default.CameraAlt,
-                    contentDescription = "Capture",
-                    tint = Color.White,
-                    modifier = Modifier.size(36.dp)
-                )
+                Icon(Icons.Default.CameraAlt, contentDescription = "Capture", tint = Color.White, modifier = Modifier.size(36.dp))
             }
 
-            if (isCapturing) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.3f)),
-                    contentAlignment = Alignment.Center
-                ) {
+            if (isCapturing.get()) {
+                Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.3f)), Alignment.Center) {
                     CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                 }
             }
@@ -450,11 +423,11 @@ private fun AutoCaptureBanner(
     progress: Int
 ) {
     val (color, text) = when (status) {
-        "searching" -> Color(0xFF607D8B) to "Looking for conjunctiva…"
-        "stabilizing" -> Color(0xFFFFA000) to "Hold steady…"
-        "low_quality" -> Color(0xFFE53935) to "Image too blurry, hold camera steady"
-        "ready" -> Color(0xFF43A047) to "Ready"
-        "capturing" -> Color(0xFF6750A4) to "Capturing…"
+        "searching" -> Color(0xFF607D8B) to stringResource(R.string.auto_status_searching)
+        "stabilizing" -> Color(0xFFFFA000) to stringResource(R.string.auto_status_stabilizing)
+        "low_quality" -> Color(0xFFE53935) to stringResource(R.string.auto_status_low_quality)
+        "ready" -> Color(0xFF43A047) to stringResource(R.string.auto_status_ready)
+        "capturing" -> Color(0xFF6750A4) to stringResource(R.string.auto_status_capturing)
         else -> Color(0xFF607D8B) to status
     }
 
@@ -489,30 +462,21 @@ private fun AutoCaptureBanner(
 }
 
 private class StabilityTracker {
+    private val windowSize = 8
+    private val window = ArrayDeque<Boolean>(windowSize)
     var count: Int = 0
         private set
-    private var lastDetected: Boolean = false
 
     fun update(detected: Boolean, stabilityNeeded: Int): Boolean {
-        if (detected) {
-            if (lastDetected) {
-                count++
-            } else {
-                count = 1
-                lastDetected = true
-            }
-        } else {
-            if (lastDetected) {
-                count = 0
-                lastDetected = false
-            }
-        }
+        if (window.size == windowSize) window.removeFirst()
+        window.addLast(detected)
+        count = window.count { it }
         return count >= stabilityNeeded
     }
 
     fun reset() {
+        window.clear()
         count = 0
-        lastDetected = false
     }
 }
 

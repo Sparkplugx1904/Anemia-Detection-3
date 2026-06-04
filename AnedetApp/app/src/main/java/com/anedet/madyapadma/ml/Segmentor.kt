@@ -4,8 +4,11 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.RectF
+import android.util.Log
 import com.anedet.madyapadma.model.MaskData
 import org.tensorflow.lite.Interpreter
+import org.tensorflow.lite.gpu.CompatibilityList
+import org.tensorflow.lite.gpu.GpuDelegate
 import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -14,27 +17,31 @@ import java.nio.channels.FileChannel
 import kotlin.math.exp
 import kotlin.math.min
 
+/**
+ * Segmentor berbasis YOLO-seg (YOLOv8 / YOLO26) dengan GPU acceleration.
+ * Disesuaikan dengan ground-truth model: 38 features, 80x80 proto.
+ */
 class Segmentor(private val context: Context) {
 
     companion object {
         private const val MODEL_PATH = "yolo26n_seg_fp16.tflite"
         const val INPUT_SIZE = 320
         private const val CONF_THRESHOLD = 0.25f
-        // Nilai fill letterbox (0.5 = gray, sesuai YOLO training default)
         private const val LETTERBOX_FILL = 0.5f
+        private const val TAG = "Segmentor"
     }
 
     private var interpreter: Interpreter? = null
+    private var gpuDelegate: GpuDelegate? = null
     private var outputShapes = listOf<IntArray>()
+    private var outputBuffers = mutableMapOf<Int, ByteBuffer>()
 
     private val lock = Any()
 
-    // Pre-allocated input buffer — hindari alokasi heap setiap inference
     private val inputBuffer: ByteBuffer = ByteBuffer
         .allocateDirect(1 * INPUT_SIZE * INPUT_SIZE * 3 * 4)
         .also { it.order(ByteOrder.nativeOrder()) }
 
-    // Menyimpan parameter letterbox untuk decode bbox
     private data class LetterboxParams(
         val scale: Float,
         val padLeft: Int,
@@ -46,68 +53,69 @@ class Segmentor(private val context: Context) {
     suspend fun initialize() {
         if (interpreter != null) return
         val modelBuffer = loadModelFile(this.context, MODEL_PATH)
+        
         val options = Interpreter.Options().apply {
-            setNumThreads(4)
-            setUseXNNPACK(true)
+            val compatList = CompatibilityList()
+            if (compatList.isDelegateSupportedOnThisDevice) {
+                gpuDelegate = GpuDelegate(compatList.bestOptionsForThisDevice)
+                addDelegate(gpuDelegate)
+            } else {
+                setNumThreads(4)
+                setUseXNNPACK(true)
+            }
         }
-        interpreter = Interpreter(modelBuffer, options)
 
-        val interp = interpreter ?: throw RuntimeException("Failed to create interpreter")
+        val interp = Interpreter(modelBuffer, options)
+        interpreter = interp
+
         val numOutputs = interp.outputTensorCount
-        outputShapes = (0 until numOutputs).map { idx ->
-            interp.getOutputTensor(idx)?.shape() ?: intArrayOf()
+        val shapes = mutableListOf<IntArray>()
+        val buffers = mutableMapOf<Int, ByteBuffer>()
+
+        for (i in 0 until numOutputs) {
+            val tensor = interp.getOutputTensor(i)
+            val shape = tensor.shape()
+            shapes.add(shape)
+            val buffer = ByteBuffer.allocateDirect(tensor.numBytes()).apply { order(ByteOrder.nativeOrder()) }
+            buffers[i] = buffer
         }
+        
+        outputShapes = shapes
+        outputBuffers = buffers
+        Log.i(TAG, "Segmentor initialized with shapes=${shapes.map { it.toList() }}")
     }
 
-    suspend fun runSegmentation(imagePath: String): MaskData? {
-        if (interpreter == null) initialize()
-        val bitmap = BitmapFactory.decodeFile(imagePath) ?: return null
-        return runSegmentation(bitmap)
-    }
+    fun isReady(): Boolean = interpreter != null && outputBuffers.isNotEmpty()
 
     fun runSegmentation(bitmap: Bitmap): MaskData? = synchronized(lock) {
         val interp = interpreter ?: return null
+        if (outputBuffers.isEmpty()) return null
+        
         val lbParams = preprocess(bitmap)
-
-        val outputs = runInference() ?: return null
-        return parseOutput(outputs, lbParams)
+        runInference(interp)
+        return parseOutput(lbParams, bitmap.width, bitmap.height)
     }
 
-    /**
-     * Letterbox preprocessing: skala seragam, pad sisi pendek dengan LETTERBOX_FILL.
-     * Menyimpan parameter ke LetterboxParams untuk decode koordinat bbox.
-     */
     private fun preprocess(bitmap: Bitmap): LetterboxParams {
-        val origW = bitmap.width
-        val origH = bitmap.height
-
-        // Hitung scale seragam
+        val origW = bitmap.width; val origH = bitmap.height
         val scale = min(INPUT_SIZE.toFloat() / origW, INPUT_SIZE.toFloat() / origH)
-        val scaledW = (origW * scale).toInt()
-        val scaledH = (origH * scale).toInt()
+        val scaledW = (origW * scale).toInt(); val scaledH = (origH * scale).toInt()
+        val padLeft = (INPUT_SIZE - scaledW) / 2; val padTop  = (INPUT_SIZE - scaledH) / 2
 
-        // Padding simetris
-        val padLeft = (INPUT_SIZE - scaledW) / 2
-        val padTop  = (INPUT_SIZE - scaledH) / 2
-
-        // Resize bitmap ke ukuran scaled
         val scaledBitmap = Bitmap.createScaledBitmap(bitmap, scaledW, scaledH, true)
+        val pixels = IntArray(scaledW * scaledH)
+        scaledBitmap.getPixels(pixels, 0, scaledW, 0, 0, scaledW, scaledH)
+        scaledBitmap.recycle()
 
         inputBuffer.rewind()
         val fillVal = LETTERBOX_FILL
-
         for (y in 0 until INPUT_SIZE) {
             for (x in 0 until INPUT_SIZE) {
-                val srcX = x - padLeft
-                val srcY = y - padTop
-
+                val srcX = x - padLeft; val srcY = y - padTop
                 if (srcX < 0 || srcX >= scaledW || srcY < 0 || srcY >= scaledH) {
-                    // Daerah padding
-                    inputBuffer.putFloat(fillVal)
-                    inputBuffer.putFloat(fillVal)
-                    inputBuffer.putFloat(fillVal)
+                    inputBuffer.putFloat(fillVal); inputBuffer.putFloat(fillVal); inputBuffer.putFloat(fillVal)
                 } else {
-                    val pixel = scaledBitmap.getPixel(srcX, srcY)
+                    val pixel = pixels[srcY * scaledW + srcX]
                     inputBuffer.putFloat(((pixel shr 16) and 0xFF) / 255.0f)
                     inputBuffer.putFloat(((pixel shr 8)  and 0xFF) / 255.0f)
                     inputBuffer.putFloat(( pixel         and 0xFF) / 255.0f)
@@ -115,129 +123,127 @@ class Segmentor(private val context: Context) {
             }
         }
         inputBuffer.rewind()
-
-        scaledBitmap.recycle()
         return LetterboxParams(scale, padLeft, padTop, origW, origH)
     }
 
-    private fun runInference(): List<Array<Any>>? {
-        val interp = interpreter ?: return null
-        val numOutputs = outputShapes.size
-        if (numOutputs == 0) return null
-
-        val outputs = arrayOfNulls<Any>(numOutputs)
-        for (i in 0 until numOutputs) {
-            val shape = outputShapes[i]
-            // We strip batch [1] here directly in allocation if possible or keep it
-            outputs[i] = when (shape.size) {
-                2 -> Array(shape[0]) { FloatArray(shape[1]) }
-                3 -> Array(shape[0]) { Array(shape[1]) { FloatArray(shape[2]) } }
-                4 -> Array(shape[0]) { Array(shape[1]) { Array(shape[2]) { FloatArray(shape[3]) } } }
-                else -> FloatArray(shape.lastOrNull() ?: 1)
-            }
-        }
-
+    private fun runInference(interp: Interpreter) {
         val outputMap = HashMap<Int, Any>()
-        for (i in 0 until numOutputs) outputMap[i] = outputs[i] as Any
-
+        for (i in outputShapes.indices) {
+            val buf = outputBuffers[i] ?: continue
+            buf.rewind(); outputMap[i] = buf
+        }
         interp.runForMultipleInputsOutputs(arrayOf(inputBuffer), outputMap)
-
-        // Strip batch dimension (index 0) dari setiap output
-        return outputs.mapIndexed { i, out ->
-            val sh = outputShapes[i]
-            if (sh.isNotEmpty() && sh[0] == 1) {
-                if (out is Array<*>) {
-                    out[0] as Array<Any>
-                } else if (out is FloatArray) {
-                    // This case shouldn't happen with our logic but for safety
-                    out
-                } else {
-                    out as Any
-                }
-            } else {
-                out as Any
-            }
-        }.filterIsInstance<Array<Any>>()
     }
 
-    /**
-     * Parse output YOLO-seg:
-     *   outputs[0]: detection tensor [1, 300, 38] -> stripped batch [300, 38]
-     *
-     * Format YOLOv8-seg [300, 38]:
-     *  0-3: bbox (cx, cy, w, h) - Perlu konversi ke x1y1x2y2
-     *  4: confidence
-     *  5: class (eyelid/conjunctiva, etc - model ini khusus conjunctiva)
-     *  6-37: mask coefficients (32)
-     */
-    private fun parseOutput(outputs: List<Array<Any>>, lbParams: LetterboxParams): MaskData? {
-        if (outputs.isEmpty()) return null
-
-        val det0 = outputs[0] as Array<FloatArray> // output tensor layout
-        val dim1 = det0.size
-        val dim2 = det0[0].size
-
-        val numFeatures: Int
-        val numAnchors: Int
-        val isColumnMajor: Boolean
-
-        if (dim1 < dim2) {
-            // Column-major layout (e.g. [38][300]): det0[feature][anchor]
-            numFeatures = dim1
-            numAnchors = dim2
-            isColumnMajor = true
-        } else {
-            // Row-major layout (e.g. [300][38]): det0[anchor][feature]
-            numFeatures = dim2
-            numAnchors = dim1
-            isColumnMajor = false
-        }
+    private fun parseOutput(lbParams: LetterboxParams, origW: Int, origH: Int): MaskData? {
+        val detRawBuf = outputBuffers[0] ?: return null
+        detRawBuf.rewind()
+        val detBuf = detRawBuf.asFloatBuffer()
+        
+        val detShape = outputShapes[0] // [1, 300, 38]
+        if (detShape.size < 3) return null
+        
+        val numAnchors = detShape[1]
+        val numFeatures = detShape[2]
 
         if (numFeatures < 38 || numAnchors == 0) return null
 
-        // Cari deteksi dengan confidence tertinggi (index 4)
-        var bestConf = 0f
-        var bestIdx  = -1
-
+        var bestConf = 0f; var bestIdx = -1
         for (ancIdx in 0 until numAnchors) {
-            val conf = if (isColumnMajor) det0[4][ancIdx] else det0[ancIdx][4]
+            // Ground Truth: Index 4 is confidence/score
+            val conf = detBuf.get(ancIdx * numFeatures + 4)
             if (conf > bestConf && conf > CONF_THRESHOLD) {
-                bestConf = conf
-                bestIdx  = ancIdx
+                bestConf = conf; bestIdx = ancIdx
             }
         }
-
         if (bestIdx < 0) return null
 
-        // Ambil koordinat cx, cy, w, h (skala 320)
-        val cx = if (isColumnMajor) det0[0][bestIdx] else det0[bestIdx][0]
-        val cy = if (isColumnMajor) det0[1][bestIdx] else det0[bestIdx][1]
-        val w  = if (isColumnMajor) det0[2][bestIdx] else det0[bestIdx][2]
-        val h  = if (isColumnMajor) det0[3][bestIdx] else det0[bestIdx][3]
+        // Parse x1,y1,x2,y2 directly (Ground Truth: nms_coord_format=x1y1x2y2)
+        var x1Raw = detBuf.get(bestIdx * numFeatures + 0)
+        var y1Raw = detBuf.get(bestIdx * numFeatures + 1)
+        var x2Raw = detBuf.get(bestIdx * numFeatures + 2)
+        var y2Raw = detBuf.get(bestIdx * numFeatures + 3)
+        
+        if (x1Raw <= 1.01f && x2Raw <= 1.01f) {
+            x1Raw *= INPUT_SIZE; x2Raw *= INPUT_SIZE
+            y1Raw *= INPUT_SIZE; y2Raw *= INPUT_SIZE
+        }
 
-        val x1Model = cx - w/2f
-        val y1Model = cy - h/2f
-        val x2Model = cx + w/2f
-        val y2Model = cy + h/2f
+        val bbox = decodeBbox(x1Raw, y1Raw, x2Raw, y2Raw, lbParams)
 
-        // Decode dari skala model ke koordinat gambar original (kompensasi letterbox)
-        val bbox = decodeBbox(x1Model, y1Model, x2Model, y2Model, lbParams)
+        // Ground Truth: Coefficients start at index 6 (4=conf, 5=class0)
+        val coeffs = FloatArray(32)
+        for (k in 0 until 32) {
+            coeffs[k] = detBuf.get(bestIdx * numFeatures + (6 + k))
+        }
 
-        // Model ini hanya punya 1 output [1, 300, 38] atau [1, 38, 300] sesuai keluhan poin 3 & 11.
-        // Tidak ada prototype mask terpisah.
-        // Menggunakan ellipse fallback atau mask di-reconstruct dari coeff jika model support
-        return MaskData(bbox, fallbackMask(bbox, lbParams.origW, lbParams.origH), bestConf)
+        val protoRawBuf = outputBuffers[1] ?: return null
+        protoRawBuf.rewind()
+        val protoBuf = protoRawBuf.asFloatBuffer()
+        val protoShape = outputShapes[1] // [1, 80, 80, 32]
+        
+        val mask = computeProtoMask(protoBuf, protoShape, coeffs, bbox, lbParams)
+
+        // Detect correct resolution from NHWC [1, 80, 80, 32] or NCHW [1, 32, 80, 80]
+        val mw = if (protoShape[1] != 32) protoShape[2] else protoShape[3]
+        val mh = if (protoShape[1] != 32) protoShape[1] else protoShape[2]
+
+        return MaskData(
+            bbox = bbox,
+            mask = mask,
+            confidence = bestConf,
+            protoW = mw,
+            protoH = mh,
+            lbScale = lbParams.scale,
+            lbPadLeft = lbParams.padLeft,
+            lbPadTop = lbParams.padTop
+        )
     }
 
-    /**
-     * Decode koordinat dari skala model (INPUT_SIZE) ke koordinat gambar original,
-     * dengan kompensasi letterbox padding.
-     */
-    private fun decodeBbox(
-        x1m: Float, y1m: Float, x2m: Float, y2m: Float,
-        p: LetterboxParams
-    ): RectF {
-        // Hapus padding, kemudian bagi scale
+    private fun computeProtoMask(
+        protoBuf: java.nio.FloatBuffer,
+        protoShape: IntArray,
+        coeffs: FloatArray,
+        bbox: RectF,
+        lb: LetterboxParams
+    ): Array<FloatArray> {
+        // NHWC [1, 80, 80, 32] or NCHW [1, 32, 80, 80]
+        val isNHWC = protoShape[1] != 32
+        val h = if (isNHWC) protoShape[1] else protoShape[2]
+        val w = if (isNHWC) protoShape[2] else protoShape[3]
+        val c = if (isNHWC) protoShape[3] else protoShape[1]
+
+        // Map bbox to proto space (80x80)
+        val pLeft   = ((bbox.left   * lb.scale + lb.padLeft) * (w / INPUT_SIZE.toFloat())).toInt().coerceIn(0, w - 1)
+        val pTop    = ((bbox.top    * lb.scale + lb.padTop)  * (h / INPUT_SIZE.toFloat())).toInt().coerceIn(0, h - 1)
+        val pRight  = ((bbox.right  * lb.scale + lb.padLeft) * (w / INPUT_SIZE.toFloat())).toInt().coerceIn(0, w - 1)
+        val pBottom = ((bbox.bottom * lb.scale + lb.padTop)  * (h / INPUT_SIZE.toFloat())).toInt().coerceIn(0, h - 1)
+
+        val result = Array(h) { FloatArray(w) }
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                if (x < pLeft || x > pRight || y < pTop || y > pBottom) {
+                    result[y][x] = 0f
+                    continue
+                }
+
+                var sum = 0f
+                if (isNHWC) {
+                    val base = (y * w + x) * c
+                    for (k in 0 until 32) sum += protoBuf.get(base + k) * coeffs[k]
+                } else {
+                    val plane = h * w
+                    for (k in 0 until 32) sum += protoBuf.get(k * plane + y * w + x) * coeffs[k]
+                }
+                result[y][x] = if (sigmoid(sum) > 0.5f) 1f else 0f
+            }
+        }
+        return result
+    }
+
+    private fun sigmoid(x: Float): Float = (1f / (1f + exp(-x.toDouble()))).toFloat()
+
+    private fun decodeBbox(x1m: Float, y1m: Float, x2m: Float, y2m: Float, p: LetterboxParams): RectF {
         val x1 = ((x1m - p.padLeft) / p.scale).coerceIn(0f, p.origW.toFloat())
         val y1 = ((y1m - p.padTop)  / p.scale).coerceIn(0f, p.origH.toFloat())
         val x2 = ((x2m - p.padLeft) / p.scale).coerceIn(0f, p.origW.toFloat())
@@ -245,35 +251,21 @@ class Segmentor(private val context: Context) {
         return RectF(x1, y1, x2, y2)
     }
 
-    private fun fallbackMask(bbox: RectF, w: Int, h: Int): Array<FloatArray> {
-        val mask = Array(h) { FloatArray(w) }
-        val cx = bbox.centerX().toInt()
-        val cy = bbox.centerY().toInt()
-        val rx = (bbox.width()  / 2f).toInt().coerceAtLeast(1)
-        val ry = (bbox.height() / 2f).toInt().coerceAtLeast(1)
-        val rxSq = rx.toLong() * rx
-        val rySq = ry.toLong() * ry
-        for (y in 0 until h) {
-            for (x in 0 until w) {
-                val dx = (x - cx).toLong()
-                val dy = (y - cy).toLong()
-                mask[y][x] = if (dx * dx * rySq + dy * dy * rxSq <= rxSq * rySq) 1f else 0f
-            }
-        }
-        return mask
-    }
-
     private fun loadModelFile(context: Context, modelPath: String): MappedByteBuffer {
         val assetFd = context.assets.openFd(modelPath)
         return FileInputStream(assetFd.fileDescriptor).channel.map(
-            FileChannel.MapMode.READ_ONLY,
-            assetFd.startOffset,
-            assetFd.declaredLength
+            FileChannel.MapMode.READ_ONLY, assetFd.startOffset, assetFd.declaredLength
         )
     }
 
     fun close() {
-        interpreter?.close()
-        interpreter = null
+        interpreter?.close(); interpreter = null
+        gpuDelegate?.close(); gpuDelegate = null
+    }
+
+    suspend fun runSegmentation(imagePath: String): MaskData? {
+        if (interpreter == null) initialize()
+        val bitmap = BitmapFactory.decodeFile(imagePath) ?: return null
+        return runSegmentation(bitmap)
     }
 }

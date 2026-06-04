@@ -20,10 +20,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlin.math.max
 
-class AnemiaPipeline(private val context: Context) {
+class AnemiaPipeline(
+    private val context: Context,
+    private val segmentor: Segmentor
+) {
 
-    // Init di konstruktor, bukan lazy — hindari race condition
-    private val segmentor = Segmentor(context)
     private val classifier = Classifier(context)
 
     suspend fun initialize() {
@@ -57,7 +58,9 @@ class AnemiaPipeline(private val context: Context) {
                     error = "Gagal decode gambar"
                 )
 
-            val croppedBitmap = cropConjunctiva(original, segResult.bbox)
+            // 2. Crop konjungtiva menggunakan Polygon/Mask Trace (Precision Crop)
+            val croppedBitmap = cropByMask(original, segResult)
+            
             if (croppedBitmap == null) {
                 original.recycle()
                 return@withContext PredictionResult(
@@ -66,11 +69,11 @@ class AnemiaPipeline(private val context: Context) {
                     nonAnemicProbability = 0f,
                     maskOverlay = null,
                     inferenceTimeMs = elapsed(startTime),
-                    error = "Gagal crop konjungtiva"
+                    error = "Gagal crop polygon konjungtiva"
                 )
             }
 
-            // 3. Klasifikasi — terima Bitmap langsung
+            // 3. Klasifikasi — terima Bitmap hasil precision crop
             val clsResult = classifier.classify(croppedBitmap)
             croppedBitmap.recycle()
 
@@ -114,8 +117,58 @@ class AnemiaPipeline(private val context: Context) {
     }
 
     /**
-     * Crop region bbox dari bitmap original dan resize ke ukuran input classifier.
-     * Tidak menulis ke disk — langsung kembalikan Bitmap.
+     * Precision Crop menggunakan Mask/Polygon.
+     * Menggunakan PorterDuff Xfermode untuk nge-crop bitmap mengikuti trace mask.
+     * Hasilnya adalah bitmap dimana hanya area konjungtiva yang punya pixel, sisanya hitam.
+     */
+    private fun cropByMask(original: Bitmap, segResult: MaskData): Bitmap? {
+        return try {
+            val mask = segResult.mask
+            val mh = mask.size
+            val mw = if (mh > 0) mask[0].size else 0
+            if (mw == 0) return null
+
+            // 1. Buat bitmap mask binary seukuran proto (160x160)
+            val protoMaskBmp = Bitmap.createBitmap(mw, mh, Bitmap.Config.ALPHA_8)
+            val pixels = ByteArray(mw * mh)
+            for (y in 0 until mh) {
+                for (x in 0 until mw) {
+                    // Binary threshold: 255 (visible) atau 0 (transparent)
+                    pixels[y * mw + x] = if (mask[y][x] > 0.5f) 255.toByte() else 0.toByte()
+                }
+            }
+            protoMaskBmp.copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(pixels))
+
+            // 2. Siapkan canvas seukuran original untuk proses masking
+            val result = Bitmap.createBitmap(original.width, original.height, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(result)
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+            // 3. Gambar mask yang sudah di-scale ke koordinat original
+            val matrix = buildMaskMatrix(
+                mw, mh, segResult.protoW, segResult.protoH,
+                original.width, original.height,
+                segResult.lbScale, segResult.lbPadLeft, segResult.lbPadTop
+            )
+            canvas.drawBitmap(protoMaskBmp, matrix, paint)
+            protoMaskBmp.recycle()
+
+            // 4. SRC_IN: Ambil area "original" yang overlap dengan "mask"
+            paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_IN)
+            canvas.drawBitmap(original, 0f, 0f, paint)
+            paint.xfermode = null
+
+            // 5. Crop hasil akhirnya ke bounding box saja agar tidak terlalu banyak area hitam
+            cropConjunctiva(result, segResult.bbox)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Crop region bbox dari bitmap original. Tidak melakukan resize di sini —
+     * Classifier akan menangani letterbox ke ukuran inputnya sendiri.
+     * Menghindari double-resize yang merusak proporsi konjungtiva.
      */
     private fun cropConjunctiva(bitmap: Bitmap, bbox: RectF): Bitmap? {
         return try {
@@ -127,11 +180,7 @@ class AnemiaPipeline(private val context: Context) {
             val cropW = (right - left).toInt().coerceAtLeast(1)
             val cropH = (bottom - top).toInt().coerceAtLeast(1)
 
-            val cropped = Bitmap.createBitmap(bitmap, left.toInt(), top.toInt(), cropW, cropH)
-            // Resize ke input size classifier — classifier akan handle letterbox sendiri
-            val resized = Bitmap.createScaledBitmap(cropped, Classifier.INPUT_SIZE, Classifier.INPUT_SIZE, true)
-            if (cropped !== resized) cropped.recycle()
-            resized
+            Bitmap.createBitmap(bitmap, left.toInt(), top.toInt(), cropW, cropH)
         } catch (e: Exception) {
             null
         }
@@ -154,29 +203,38 @@ class AnemiaPipeline(private val context: Context) {
             val maskW = if (maskH > 0) mask[0].size else 0
             if (maskW == 0) return null
 
-            // 1. Buat overlay bitmap seukuran original (langsung gambar di sini)
+            // 1. Buat overlay seukuran original
             val overlay = original.copy(Bitmap.Config.ARGB_8888, true)
             val canvas = Canvas(overlay)
 
-            // 2. Gambar filled ellipse mask (semi-transparan hijau) langsung pada overlay
-            val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.argb(140, 76, 175, 80)
-                style = Paint.Style.FILL
+            // 2. Buat bitmap mask transparan (proto space / mask space)
+            val maskBitmap = Bitmap.createBitmap(maskW, maskH, Bitmap.Config.ARGB_8888)
+            val maskPixels = IntArray(maskW * maskH)
+            for (y in 0 until maskH) {
+                for (x in 0 until maskW) {
+                    val alpha = if (mask[y][x] > 0.5f) 160 else 0
+                    maskPixels[y * maskW + x] = Color.argb(alpha, 76, 175, 80)
+                }
             }
-            val bbox = segResult.bbox
-            val cx = bbox.centerX()
-            val cy = bbox.centerY()
-            val rx = bbox.width()  / 2f
-            val ry = bbox.height() / 2f
-            canvas.drawOval(cx - rx, cy - ry, cx + rx, cy + ry, fillPaint)
+            maskBitmap.setPixels(maskPixels, 0, maskW, 0, 0, maskW, maskH)
 
-            // 3. Gambar stroke ellipse agar lebih jelas
-            val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.argb(255, 27, 94, 32)   // dark green stroke
-                style = Paint.Style.STROKE
-                strokeWidth = max(4f, original.width / 250f)
+            // 3. Transform mask space -> original image space
+            val matrix = if (segResult.protoW > 0) {
+                buildMaskMatrix(
+                    maskW, maskH,
+                    segResult.protoW, segResult.protoH,
+                    original.width, original.height,
+                    segResult.lbScale, segResult.lbPadLeft, segResult.lbPadTop
+                )
+            } else {
+                // Fallback: scale mask langsung ke original
+                Matrix().apply {
+                    postScale(original.width.toFloat() / maskW, original.height.toFloat() / maskH)
+                }
             }
-            canvas.drawOval(cx - rx, cy - ry, cx + rx, cy + ry, strokePaint)
+
+            canvas.drawBitmap(maskBitmap, matrix, Paint(Paint.FILTER_BITMAP_FLAG))
+            maskBitmap.recycle()
 
             // 4. Gambar bbox rectangle dengan warna diagnosis
             val bboxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -184,7 +242,7 @@ class AnemiaPipeline(private val context: Context) {
                 style = Paint.Style.STROKE
                 strokeWidth = max(3f, original.width / 350f)
             }
-            canvas.drawRect(bbox, bboxPaint)
+            canvas.drawRect(segResult.bbox, bboxPaint)
 
             overlay
         } catch (e: Exception) {

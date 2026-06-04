@@ -84,7 +84,8 @@ fun AnedetNavGraph() {
                     val imagePath = Uri.decode(backStackEntry.arguments?.getString("imagePath") ?: "")
                     ResultScreen(
                         imagePath = imagePath,
-                        onRetake = { navController.popBackStack() }
+                        onRetake = { navController.popBackStack() },
+                        viewModel = cameraViewModel
                     )
                 }
             }

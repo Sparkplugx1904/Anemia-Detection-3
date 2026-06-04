@@ -74,7 +74,7 @@ class AppSettings(context: Context) {
         private const val KEY_SHARPNESS = "sharpness_min"
         private const val KEY_LANGUAGE = "language"
 
-        const val DEFAULT_THRESHOLD = 0.55f
+        const val DEFAULT_THRESHOLD = 0.35f
         const val DEFAULT_STABILITY = 4
         const val DEFAULT_SHARPNESS = 8f
         const val DEFAULT_LANGUAGE = "en"

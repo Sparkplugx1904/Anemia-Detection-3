@@ -84,11 +84,10 @@ dependencies {
     implementation(libs.camerax.view)
     implementation(libs.camerax.compose)
 
-    // TensorFlow Lite
-    implementation(libs.tflite)
-    implementation(libs.tflite.gpu) {
-        exclude(group = "org.tensorflow", module = "tensorflow-lite")
-    }
+    // TensorFlow Lite (Stable)
+    implementation(libs.tensorflow.lite)
+    implementation(libs.tensorflow.lite.gpu)
+    implementation(libs.tensorflow.lite.gpu.api)
 
     // Coroutines
     implementation(libs.coroutines.core)

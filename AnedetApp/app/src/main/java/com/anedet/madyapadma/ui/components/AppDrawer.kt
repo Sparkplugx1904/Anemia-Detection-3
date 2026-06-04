@@ -43,7 +43,7 @@ data class LanguageOption(
 
 val SUPPORTED_LANGUAGES = listOf(
     LanguageOption("en", "English", "English"),
-    LanguageOption("in", "Indonesian", "Bahasa Indonesia"),
+    LanguageOption("id", "Indonesian", "Bahasa Indonesia"),
     LanguageOption("th", "Thai", "ภาษาไทย")
 )
 
