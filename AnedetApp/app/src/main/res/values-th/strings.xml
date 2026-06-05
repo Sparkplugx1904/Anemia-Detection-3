@@ -33,4 +33,6 @@
     <string name="auto_status_ready">พร้อม</string>
     <string name="low_confidence_warning">ความเชื่อมั่นต่ำ — กรุณาถ่ายใหม่</string>
     <string name="toggle_mask">สลับการแสดงผลหน้ากาก</string>
+    <string name="toggle_crop_preview">สลับการแสดงภาพตัวอย่างการครอบตัด</string>
+    <string name="crop_preview_label">ครอบตัด</string>
 </resources>

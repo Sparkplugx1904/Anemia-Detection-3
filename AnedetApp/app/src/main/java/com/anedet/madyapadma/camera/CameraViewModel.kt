@@ -85,6 +85,9 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     fun analyzeImage(imagePath: String) {
         viewModelScope.launch {
+            // Lepas bitmap lama sebelum replace (biar GC bisa回收 memory).
+            _predictionResult.value?.croppedPreview?.recycle()
+            _predictionResult.value?.maskOverlay?.recycle()
             // Reset state sebelumnya agar UI tidak menampilkan result lama
             // saat loading baru dimulai (mencegah stuck loading)
             _predictionResult.value = null

@@ -26,7 +26,8 @@ data class PredictionResult(
     val inferenceTimeMs: Long,
     val error: String? = null,
     val bbox: RectF? = null,
-    val polygon: List<PointF> = emptyList()
+    val polygon: List<PointF> = emptyList(),
+    val croppedPreview: Bitmap? = null
 ) {
     /** Nilai keyakinan = probabilitas kelas pemenang. */
     val confidence: Float

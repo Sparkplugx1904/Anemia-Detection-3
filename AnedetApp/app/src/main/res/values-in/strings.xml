@@ -33,4 +33,6 @@
     <string name="auto_status_ready">Siap</string>
     <string name="low_confidence_warning">Keyakinan rendah — silakan ambil ulang</string>
     <string name="toggle_mask">Alihkan mask overlay</string>
+    <string name="toggle_crop_preview">Alihkan pratinjau crop konjungtiva</string>
+    <string name="crop_preview_label">Crop</string>
 </resources>

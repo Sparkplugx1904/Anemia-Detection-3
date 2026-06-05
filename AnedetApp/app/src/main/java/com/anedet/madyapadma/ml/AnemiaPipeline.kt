@@ -76,9 +76,9 @@ class AnemiaPipeline(
 
             // 3. Klasifikasi — terima Bitmap hasil precision crop
             val clsResult = classifier.classify(croppedBitmap)
-            croppedBitmap.recycle()
 
             if (clsResult == null) {
+                croppedBitmap.recycle()
                 original.recycle()
                 return@withContext PredictionResult(
                     isAnemic = false,
@@ -103,7 +103,8 @@ class AnemiaPipeline(
                 maskOverlay = maskOverlay,
                 inferenceTimeMs = elapsed(startTime),
                 bbox = segResult.bbox,
-                polygon = segResult.polygon
+                polygon = segResult.polygon,
+                croppedPreview = croppedBitmap
             )
 
         } catch (e: Exception) {

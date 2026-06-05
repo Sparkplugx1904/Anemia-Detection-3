@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BorderStyle
+import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.LayersClear
 import androidx.compose.material.icons.filled.Save
@@ -68,6 +69,8 @@ import kotlin.math.max
 import kotlin.math.min
 
 private enum class MaskMode { OFF, BORDER, FULL }
+
+private const val CROP_PREVIEW_SIZE_DP = 88
 
 @Composable
 fun ResultScreen(
@@ -139,6 +142,7 @@ private fun ResultContent(
     onSave: () -> Unit
 ) {
     var maskMode by remember { mutableStateOf(MaskMode.FULL) }
+    var showCropPreview by remember { mutableStateOf(true) }
     val bitmap = remember(imagePath) { BitmapFactory.decodeFile(imagePath) }
     val isAnemic = prediction.isAnemic
     val diagColor = if (isAnemic) Color(0xFFE53935) else Color(0xFF43A047)
@@ -226,31 +230,84 @@ private fun ResultContent(
                 }
             }
 
-            IconButton(
-                onClick = {
-                    maskMode = when (maskMode) {
-                        MaskMode.OFF -> MaskMode.BORDER
-                        MaskMode.BORDER -> MaskMode.FULL
-                        MaskMode.FULL -> MaskMode.OFF
-                    }
-                },
+            // Stack kontrol di sudut kanan-atas: [crop preview (optional)] + [crop toggle] + [mask toggle]
+            Column(
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(6.dp),
                 modifier = Modifier
+                    .align(Alignment.TopEnd)
                     .padding(8.dp)
-                    .size(40.dp)
-                    .background(Color.Black.copy(alpha = 0.5f), CircleShape)
-                    .clip(CircleShape)
             ) {
-                val icon = when (maskMode) {
-                    MaskMode.FULL -> Icons.Filled.Layers
-                    MaskMode.BORDER -> Icons.Filled.BorderStyle
-                    MaskMode.OFF -> Icons.Filled.LayersClear
+                if (showCropPreview && prediction.croppedPreview != null) {
+                    Column(horizontalAlignment = Alignment.End) {
+                        Image(
+                            bitmap = prediction.croppedPreview.asImageBitmap(),
+                            contentDescription = "Cropped conjunctiva",
+                            modifier = Modifier
+                                .size(CROP_PREVIEW_SIZE_DP.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(Color.Black.copy(alpha = 0.55f))
+                                .padding(2.dp)
+                                .clip(RoundedCornerShape(8.dp)),
+                            contentScale = ContentScale.Fit
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = stringResource(R.string.crop_preview_label),
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier
+                                .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(4.dp))
+                                .padding(horizontal = 6.dp, vertical = 1.dp)
+                        )
+                    }
                 }
-                Icon(
-                    imageVector = icon,
-                    contentDescription = stringResource(R.string.toggle_mask),
-                    tint = Color.White,
-                    modifier = Modifier.size(22.dp)
-                )
+
+                IconButton(
+                    onClick = { showCropPreview = !showCropPreview },
+                    modifier = Modifier
+                        .size(40.dp)
+                        .background(
+                            if (showCropPreview) Color(0xFF4CAF50).copy(alpha = 0.85f)
+                            else Color.Black.copy(alpha = 0.5f),
+                            CircleShape
+                        )
+                        .clip(CircleShape)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.ContentCut,
+                        contentDescription = stringResource(R.string.toggle_crop_preview),
+                        tint = Color.White,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+
+                IconButton(
+                    onClick = {
+                        maskMode = when (maskMode) {
+                            MaskMode.OFF -> MaskMode.BORDER
+                            MaskMode.BORDER -> MaskMode.FULL
+                            MaskMode.FULL -> MaskMode.OFF
+                        }
+                    },
+                    modifier = Modifier
+                        .size(40.dp)
+                        .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                        .clip(CircleShape)
+                ) {
+                    val icon = when (maskMode) {
+                        MaskMode.FULL -> Icons.Filled.Layers
+                        MaskMode.BORDER -> Icons.Filled.BorderStyle
+                        MaskMode.OFF -> Icons.Filled.LayersClear
+                    }
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = stringResource(R.string.toggle_mask),
+                        tint = Color.White,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
             }
         }
 
