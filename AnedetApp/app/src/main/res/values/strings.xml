@@ -35,4 +35,8 @@
     <string name="toggle_mask">Toggle mask overlay</string>
     <string name="toggle_crop_preview">Toggle cropped conjunctiva preview</string>
     <string name="crop_preview_label">Crop</string>
+    
+    <!-- Medical Disclaimer -->
+    <string name="medical_disclaimer">⚕️ This app is not a medical diagnostic tool. Results are for screening purposes only. Please consult a healthcare professional for medical advice and diagnosis.</string>
+    <string name="disclaimer_title">Medical Disclaimer</string>
 </resources>

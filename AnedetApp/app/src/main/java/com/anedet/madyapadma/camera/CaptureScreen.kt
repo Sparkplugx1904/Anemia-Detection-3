@@ -58,7 +58,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -66,8 +65,8 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner as ComposeLifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.anedet.madyapadma.R
 import com.anedet.madyapadma.model.MaskData
+import com.anedet.madyapadma.ui.components.t
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -109,6 +108,9 @@ fun CaptureScreen(
     val analyzerExecutor = remember { Executors.newSingleThreadExecutor() }
     val imageCaptureRef = remember { AtomicReference<ImageCapture?>() }
     var overlayView by remember { mutableStateOf<MaskOverlayView?>(null) }
+    
+    // Bitmap pool untuk rotation reuse (Bug 5.2 fix)
+    val bitmapPool = remember { com.anedet.madyapadma.ml.BitmapPool(maxPoolSize = 3) }
 
     val segmentor = remember(viewModel) { viewModel.segmentor }
     val autoCaptureStatus by viewModel.autoCaptureStatus.collectAsState()
@@ -116,6 +118,20 @@ fun CaptureScreen(
     val autoCaptureEnabled by viewModel.settings.smartAutoCapture.collectAsState()
 
     val stabilityState = remember { StabilityTracker() }
+    
+    // Mask persistence - keep showing mask even if temporarily lost
+    var lastValidMask by remember { mutableStateOf<MaskData?>(null) }
+    var lastValidMaskBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var maskLostFrames by remember { mutableStateOf(0) }
+    val MASK_PERSISTENCE_FRAMES = 5  // Keep mask for 5 frames after lost
+    
+    // Cleanup bitmap pool on disposal
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose {
+            bitmapPool.clear()
+            analyzerExecutor.shutdown()
+        }
+    }
 
     LaunchedEffect(Unit) {
         withContext(Dispatchers.Default) { segmentor.initialize() }
@@ -183,52 +199,93 @@ fun CaptureScreen(
                             .build()
                         imageCaptureRef.set(imageCapture)
 
+                        // Bug 5.1 Fix: Set explicit resolution untuk avoid 4K overhead
+                        // Low-end device target: 1280×720 optimal balance quality vs performance
                         val imageAnalysis = ImageAnalysis.Builder()
                             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                             .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                             .setTargetRotation(previewView.display?.rotation ?: android.view.Surface.ROTATION_0)
+                            .setTargetResolution(android.util.Size(1280, 720))
                             .build()
 
                         val isProcessing = AtomicBoolean(false)
 
                         imageAnalysis.setAnalyzer(analyzerExecutor) { imageProxy ->
+                            // Bug 2.3 Fix: Proper non-blocking dengan early return jika masih processing
                             if (isProcessing.get()) {
                                 imageProxy.close()
                                 return@setAnalyzer
                             }
                             
-                            val rotation = imageProxy.imageInfo.rotationDegrees
-                            val srcBitmap: Bitmap? = try {
-                                imageProxy.toBitmap()
-                            } catch (e: Exception) {
-                                Log.e(TAG, "toBitmap failed: ${e.message}")
-                                null
-                            }
-                            imageProxy.close()
-                            if (srcBitmap == null) return@setAnalyzer
-
                             isProcessing.set(true)
+                            
+                            val rotation = imageProxy.imageInfo.rotationDegrees
+                            var srcBitmap: Bitmap? = null
+                            var bitmap: Bitmap? = null
+                            var maskBmp: Bitmap? = null
+                            
                             try {
+                                // Bug 1.1 Fix: Proper try-finally untuk bitmap recycle
+                                srcBitmap = try {
+                                    imageProxy.toBitmap()
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "toBitmap failed: ${e.message}")
+                                    null
+                                }
+                                
+                                if (srcBitmap == null) {
+                                    return@setAnalyzer
+                                }
+                                
                                 if (!segmentor.isReady()) {
                                     kotlinx.coroutines.runBlocking { segmentor.initialize() }
                                 }
 
-                                val bitmap: Bitmap = if (rotation != 0) {
+                                // Bug 5.2 Fix: Use bitmap pool for rotation
+                                bitmap = if (rotation != 0) {
                                     val matrix = Matrix().apply { postRotate(rotation.toFloat()) }
-                                    val rotated = Bitmap.createBitmap(
-                                        srcBitmap, 0, 0,
-                                        srcBitmap.width, srcBitmap.height, matrix, true
+                                    
+                                    // Try get from pool first
+                                    val pooled = bitmapPool.get(
+                                        srcBitmap.height, // rotated dimensions
+                                        srcBitmap.width,
+                                        Bitmap.Config.ARGB_8888
                                     )
-                                    if (rotated !== srcBitmap) srcBitmap.recycle()
+                                    
+                                    val rotated = if (pooled != null) {
+                                        // Reuse pooled bitmap
+                                        val canvas = android.graphics.Canvas(pooled)
+                                        canvas.drawBitmap(srcBitmap, matrix, null)
+                                        pooled
+                                    } else {
+                                        // Create new if pool empty
+                                        Bitmap.createBitmap(
+                                            srcBitmap, 0, 0,
+                                            srcBitmap.width, srcBitmap.height, matrix, true
+                                        )
+                                    }
+                                    
                                     rotated
                                 } else {
                                     srcBitmap
+                                }
+                                
+                                // Bug 2.4 Fix: Quality pre-check sebelum inference
+                                val minSharpness = viewModel.settings.sharpnessMin.value
+                                if (!ImageQualityUtils.isQualitySufficientForInference(bitmap, minSharpness)) {
+                                    // Skip inference on low-quality frame
+                                    mainExecutor.execute {
+                                        overlayView?.setMaskData(null, null, bitmap.width, bitmap.height, 0)
+                                        if (viewModel.settings.smartAutoCapture.value && !isCapturing.get()) {
+                                            viewModel.reportAutoCaptureStatus("low_quality", 0)
+                                        }
+                                    }
+                                    return@setAnalyzer
                                 }
 
                                 val result: MaskData? = segmentor.runSegmentation(bitmap)
 
                                 // 4. Create mask bitmap on background thread
-                                var maskBmp: Bitmap? = null
                                 if (result != null && result.confidence >= viewModel.settings.confidenceThreshold.value) {
                                     val mw = result.protoW; val mh = result.protoH
                                     if (mw > 0 && mh > 0) {
@@ -250,8 +307,38 @@ fun CaptureScreen(
                                     val confThreshold = viewModel.settings.confidenceThreshold.value
                                     val finalResult = if (result != null && result.confidence >= confThreshold) result else null
                                     
-                                    overlayView?.setMaskData(finalResult, maskBmp, bitmap.width, bitmap.height, 0)
-                                    viewModel.updateLiveMask(finalResult, bitmap.width, bitmap.height)
+                                    // Mask persistence logic - reduce flicker
+                                    val displayResult: MaskData?
+                                    val displayMaskBmp: Bitmap?
+                                    
+                                    if (finalResult != null) {
+                                        // New valid mask detected
+                                        lastValidMask = finalResult
+                                        lastValidMaskBitmap?.recycle()  // Recycle old
+                                        lastValidMaskBitmap = maskBmp
+                                        maskLostFrames = 0
+                                        displayResult = finalResult
+                                        displayMaskBmp = maskBmp
+                                    } else {
+                                        // No mask detected - check if we should persist
+                                        maskLostFrames++
+                                        if (maskLostFrames <= MASK_PERSISTENCE_FRAMES && lastValidMask != null) {
+                                            // Still within persistence window - show last valid mask
+                                            displayResult = lastValidMask
+                                            displayMaskBmp = lastValidMaskBitmap
+                                        } else {
+                                            // Too long without detection - clear mask
+                                            lastValidMask = null
+                                            lastValidMaskBitmap?.recycle()
+                                            lastValidMaskBitmap = null
+                                            maskLostFrames = 0
+                                            displayResult = null
+                                            displayMaskBmp = null
+                                        }
+                                    }
+                                    
+                                    overlayView?.setMaskData(displayResult, displayMaskBmp, bitmap.width, bitmap.height, 0)
+                                    viewModel.updateLiveMask(displayResult, bitmap.width, bitmap.height)
 
                                     val autoCap = viewModel.settings.smartAutoCapture.value
                                     if (autoCap && result != null && !isCapturing.get()) {
@@ -294,11 +381,22 @@ fun CaptureScreen(
                                     } else if (!autoCap) {
                                         viewModel.reportAutoCaptureStatus("searching", 0)
                                     }
-                                    bitmap.recycle()
                                 }
                             } catch (e: Exception) {
                                 Log.e(TAG, "Analyzer error: ${e.message}")
                             } finally {
+                                imageProxy.close()
+                                
+                                // Recycle atau return to pool
+                                if (bitmap != null && bitmap !== srcBitmap && rotation != 0) {
+                                    // Return rotated bitmap to pool
+                                    bitmapPool.put(bitmap)
+                                } else {
+                                    bitmap?.recycle()
+                                }
+                                
+                                srcBitmap?.recycle()
+                                
                                 isProcessing.set(false)
                             }
                         }
@@ -423,11 +521,11 @@ private fun AutoCaptureBanner(
     progress: Int
 ) {
     val (color, text) = when (status) {
-        "searching" -> Color(0xFF607D8B) to stringResource(R.string.auto_status_searching)
-        "stabilizing" -> Color(0xFFFFA000) to stringResource(R.string.auto_status_stabilizing)
-        "low_quality" -> Color(0xFFE53935) to stringResource(R.string.auto_status_low_quality)
-        "ready" -> Color(0xFF43A047) to stringResource(R.string.auto_status_ready)
-        "capturing" -> Color(0xFF6750A4) to stringResource(R.string.auto_status_capturing)
+        "searching" -> Color(0xFF607D8B) to t("auto_status_searching")
+        "stabilizing" -> Color(0xFFFFA000) to t("auto_status_stabilizing")
+        "low_quality" -> Color(0xFFE53935) to t("auto_status_low_quality")
+        "ready" -> Color(0xFF43A047) to t("auto_status_ready")
+        "capturing" -> Color(0xFF6750A4) to t("auto_status_capturing")
         else -> Color(0xFF607D8B) to status
     }
 
@@ -461,6 +559,12 @@ private fun AutoCaptureBanner(
     }
 }
 
+/**
+ * Simple Stability Tracker untuk auto-capture.
+ * 
+ * Tracks detection success dalam sliding window untuk memastikan
+ * frame stabil sebelum trigger auto-capture.
+ */
 private class StabilityTracker {
     private val windowSize = 8
     private val window = ArrayDeque<Boolean>(windowSize)

@@ -35,6 +35,10 @@ class AnemiaPipeline(
 
     suspend fun analyze(imagePath: String): PredictionResult = withContext(Dispatchers.Default) {
         val startTime = System.currentTimeMillis()
+        
+        var original: Bitmap? = null
+        var croppedBitmap: Bitmap? = null
+        var maskOverlay: Bitmap? = null
 
         try {
             // 1. Segmentasi
@@ -49,7 +53,7 @@ class AnemiaPipeline(
                 )
 
             // 2. Crop konjungtiva langsung sebagai Bitmap (tanpa roundtrip ke disk)
-            val original = BitmapFactory.decodeFile(imagePath)
+            original = BitmapFactory.decodeFile(imagePath)
                 ?: return@withContext PredictionResult(
                     isAnemic = false,
                     anemicProbability = 0f,
@@ -60,10 +64,9 @@ class AnemiaPipeline(
                 )
 
             // 2. Crop konjungtiva menggunakan Polygon/Mask Trace (Precision Crop)
-            val croppedBitmap = cropByMask(original, segResult)
+            croppedBitmap = cropByMask(original, segResult)
             
             if (croppedBitmap == null) {
-                original.recycle()
                 return@withContext PredictionResult(
                     isAnemic = false,
                     anemicProbability = 0f,
@@ -78,8 +81,6 @@ class AnemiaPipeline(
             val clsResult = classifier.classify(croppedBitmap)
 
             if (clsResult == null) {
-                croppedBitmap.recycle()
-                original.recycle()
                 return@withContext PredictionResult(
                     isAnemic = false,
                     anemicProbability = 0f,
@@ -91,12 +92,11 @@ class AnemiaPipeline(
             }
 
             // 4. Buat mask overlay dari proto space (efisien)
-            val maskOverlay = createMaskOverlay(original, segResult)
-            original.recycle()
+            maskOverlay = createMaskOverlay(original, segResult)
 
             val (anemicProb, nonAnemicProb) = clsResult
 
-            PredictionResult(
+            return@withContext PredictionResult(
                 isAnemic = anemicProb > nonAnemicProb,
                 anemicProbability = anemicProb,
                 nonAnemicProbability = nonAnemicProb,
@@ -108,7 +108,11 @@ class AnemiaPipeline(
             )
 
         } catch (e: Exception) {
-            PredictionResult(
+            // Cleanup on error
+            croppedBitmap?.recycle()
+            maskOverlay?.recycle()
+            
+            return@withContext PredictionResult(
                 isAnemic = false,
                 anemicProbability = 0f,
                 nonAnemicProbability = 0f,
@@ -116,6 +120,9 @@ class AnemiaPipeline(
                 inferenceTimeMs = elapsed(startTime),
                 error = e.message ?: "Unknown error"
             )
+        } finally {
+            // Always recycle original (result keeps cropped & overlay)
+            original?.recycle()
         }
     }
 
@@ -125,6 +132,10 @@ class AnemiaPipeline(
      * Hasilnya adalah bitmap dimana hanya area konjungtiva yang punya pixel, sisanya hitam.
      */
     private fun cropByMask(original: Bitmap, segResult: MaskData): Bitmap? {
+        var protoMaskBmp: Bitmap? = null
+        var result: Bitmap? = null
+        var maskBitmap: Bitmap? = null
+        
         return try {
             val mask = segResult.mask
             val mh = mask.size
@@ -132,7 +143,7 @@ class AnemiaPipeline(
             if (mw == 0) return null
 
             // 1. Buat bitmap mask binary seukuran proto (160x160)
-            val protoMaskBmp = Bitmap.createBitmap(mw, mh, Bitmap.Config.ALPHA_8)
+            protoMaskBmp = Bitmap.createBitmap(mw, mh, Bitmap.Config.ALPHA_8)
             val pixels = ByteArray(mw * mh)
             for (y in 0 until mh) {
                 for (x in 0 until mw) {
@@ -143,7 +154,7 @@ class AnemiaPipeline(
             protoMaskBmp.copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(pixels))
 
             // 2. Siapkan canvas seukuran original untuk proses masking
-            val result = Bitmap.createBitmap(original.width, original.height, Bitmap.Config.ARGB_8888)
+            result = Bitmap.createBitmap(original.width, original.height, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(result)
             val paint = Paint(Paint.ANTI_ALIAS_FLAG)
 
@@ -154,7 +165,6 @@ class AnemiaPipeline(
                 segResult.lbScale, segResult.lbPadLeft, segResult.lbPadTop
             )
             canvas.drawBitmap(protoMaskBmp, matrix, paint)
-            protoMaskBmp.recycle()
 
             // 4. SRC_IN: Ambil area "original" yang overlap dengan "mask"
             paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_IN)
@@ -168,9 +178,20 @@ class AnemiaPipeline(
             } else {
                 segResult.bbox
             }
-            cropConjunctiva(result, cropBox)
+            
+            maskBitmap = result
+            val cropped = cropConjunctiva(maskBitmap, cropBox)
+            
+            // Return cropped, mark intermediate as to-be-recycled
+            result = null // Don't recycle in finally, returned as cropped
+            cropped
         } catch (e: Exception) {
             null
+        } finally {
+            // Cleanup intermediate bitmaps
+            protoMaskBmp?.recycle()
+            result?.recycle() // Only recycle if not returned
+            // maskBitmap will be recycled via result (same reference) or as cropped source
         }
     }
 
@@ -220,6 +241,9 @@ class AnemiaPipeline(
      * + outline polygon konjungtiva.
      */
     private fun createMaskOverlay(original: Bitmap, segResult: MaskData): Bitmap? {
+        var maskBitmap: Bitmap? = null
+        var overlay: Bitmap? = null
+        
         return try {
             val mask = segResult.mask
             val maskH = mask.size
@@ -227,11 +251,11 @@ class AnemiaPipeline(
             if (maskW == 0) return null
 
             // 1. Buat overlay seukuran original
-            val overlay = original.copy(Bitmap.Config.ARGB_8888, true)
+            overlay = original.copy(Bitmap.Config.ARGB_8888, true)
             val canvas = Canvas(overlay)
 
             // 2. Buat bitmap mask transparan (proto space / mask space)
-            val maskBitmap = Bitmap.createBitmap(maskW, maskH, Bitmap.Config.ARGB_8888)
+            maskBitmap = Bitmap.createBitmap(maskW, maskH, Bitmap.Config.ARGB_8888)
             val maskPixels = IntArray(maskW * maskH)
             for (y in 0 until maskH) {
                 for (x in 0 until maskW) {
@@ -257,7 +281,6 @@ class AnemiaPipeline(
             }
 
             canvas.drawBitmap(maskBitmap, matrix, Paint(Paint.FILTER_BITMAP_FLAG))
-            maskBitmap.recycle()
 
             // 4. Gambar outline polygon konjungtiva (bukan bbox rectangle).
             //    Titik polygon sudah dalam koordinat gambar original.
@@ -271,9 +294,17 @@ class AnemiaPipeline(
                 canvas.drawPath(polyPath, polyPaint)
             }
 
-            overlay
+            // Return overlay, don't recycle it
+            val result = overlay
+            overlay = null // Mark as returned, don't cleanup in finally
+            result
         } catch (e: Exception) {
             null
+        } finally {
+            // Cleanup intermediate bitmaps
+            maskBitmap?.recycle()
+            // overlay only recycled if not returned (exception case)
+            overlay?.recycle()
         }
     }
 

@@ -26,10 +26,17 @@ class Classifier(private val context: Context) {
         private const val TAG = "Classifier"
         private const val MODEL_PATH = "yolo26s_cls_fp16.tflite"
         const val INPUT_SIZE = 448
+        // Fixed: Use YOLO standard letterbox fill (RGB 114)
+        private const val LETTERBOX_FILL_GRAY = 114
     }
 
-    private var interpreter: Interpreter? = null
-    private var gpuDelegate: GpuDelegate? = null
+    @Volatile private var interpreter: Interpreter? = null
+    @Volatile private var gpuDelegate: GpuDelegate? = null
+    
+    // Warmup flag
+    @Volatile private var isWarmedUp = false
+    
+    private val lock = Any()
 
     // Pre-allocated buffer
     private val inputBuffer: ByteBuffer = ByteBuffer
@@ -38,20 +45,68 @@ class Classifier(private val context: Context) {
 
     suspend fun initialize() {
         if (interpreter != null) return
-        val modelBuffer = loadModelFile(this.context, MODEL_PATH)
-        val options = Interpreter.Options().apply {
-            val compatList = CompatibilityList()
-            if (compatList.isDelegateSupportedOnThisDevice) {
-                gpuDelegate = GpuDelegate(compatList.bestOptionsForThisDevice)
-                addDelegate(gpuDelegate)
-            } else {
-                setNumThreads(4)
-                setUseXNNPACK(true)
+        
+        synchronized(lock) {
+            // Double-check after acquiring lock
+            if (interpreter != null) return
+            
+            val modelBuffer = loadModelFile(this.context, MODEL_PATH)
+            val options = Interpreter.Options().apply {
+                // Use cached GPU compatibility check
+                val delegate = GpuCompatibilityCache.createGpuDelegateIfSupported()
+                if (delegate != null) {
+                    gpuDelegate = delegate
+                    addDelegate(delegate)
+                    Log.i(TAG, "GPU delegate enabled")
+                } else {
+                    val optimalThreads = GpuCompatibilityCache.getOptimalCpuThreads()
+                    setNumThreads(optimalThreads)
+                    setUseXNNPACK(true)
+                    Log.i(TAG, "CPU fallback with $optimalThreads threads")
+                }
             }
-        }
 
-        interpreter = Interpreter(modelBuffer, options)
-        Log.i(TAG, "Classifier initialized: output shape=${interpreter?.getOutputTensor(0)?.shape()?.toList()}")
+            interpreter = Interpreter(modelBuffer, options)
+            Log.i(TAG, "Classifier initialized: output shape=${interpreter?.getOutputTensor(0)?.shape()?.toList()}")
+            
+            // Warmup inference
+            performWarmupInference()
+        }
+    }
+    
+    /**
+     * Warmup inference untuk avoid first inference slowdown.
+     */
+    private fun performWarmupInference() {
+        if (isWarmedUp) return
+        val interp = interpreter ?: return
+        
+        try {
+            Log.i(TAG, "Performing warmup inference...")
+            val startTime = System.currentTimeMillis()
+            
+            // Fill with dummy data
+            inputBuffer.rewind()
+            val fillVal = LETTERBOX_FILL_GRAY / 255f
+            repeat(INPUT_SIZE * INPUT_SIZE * 3) {
+                inputBuffer.putFloat(fillVal)
+            }
+            inputBuffer.rewind()
+            
+            // Run dummy inference
+            val outputShape = interp.getOutputTensor(0).shape()
+            val numClasses = outputShape.getOrElse(1) { 2 }
+            val output = Array(1) { FloatArray(numClasses) }
+            val outputMap = HashMap<Int, Any>()
+            outputMap[0] = output
+            interp.runForMultipleInputsOutputs(arrayOf(inputBuffer), outputMap)
+            
+            val elapsed = System.currentTimeMillis() - startTime
+            Log.i(TAG, "Warmup inference completed in ${elapsed}ms")
+            isWarmedUp = true
+        } catch (e: Exception) {
+            Log.w(TAG, "Warmup inference failed (non-critical): ${e.message}")
+        }
     }
 
     /**
@@ -117,7 +172,8 @@ class Classifier(private val context: Context) {
         val scaled = Bitmap.createScaledBitmap(src, scaledW, scaledH, true)
         val result = Bitmap.createBitmap(targetSize, targetSize, Bitmap.Config.ARGB_8888)
         val canvas = android.graphics.Canvas(result)
-        canvas.drawColor(android.graphics.Color.rgb(128, 128, 128))
+        // Fixed: Use YOLO standard gray value (114) instead of 128
+        canvas.drawColor(android.graphics.Color.rgb(LETTERBOX_FILL_GRAY, LETTERBOX_FILL_GRAY, LETTERBOX_FILL_GRAY))
         canvas.drawBitmap(scaled, padLeft.toFloat(), padTop.toFloat(), null)
         scaled.recycle()
         return Triple(result, padLeft, padTop)
@@ -131,7 +187,32 @@ class Classifier(private val context: Context) {
     }
 
     fun close() {
-        interpreter?.close(); interpreter = null
-        gpuDelegate?.close(); gpuDelegate = null
+        synchronized(lock) {
+            try {
+                interpreter?.close()
+            } catch (e: Exception) {
+                Log.w(TAG, "Error closing interpreter: ${e.message}")
+            } finally {
+                interpreter = null
+            }
+            
+            try {
+                gpuDelegate?.close()
+            } catch (e: Exception) {
+                Log.w(TAG, "Error closing GPU delegate: ${e.message}")
+            } finally {
+                gpuDelegate = null
+            }
+            
+            // Clear ByteBuffer untuk assist GC
+            try {
+                inputBuffer.clear()
+            } catch (e: Exception) {
+                Log.w(TAG, "Error clearing input buffer: ${e.message}")
+            }
+            
+            isWarmedUp = false
+            Log.i(TAG, "Classifier closed and resources released")
+        }
     }
 }

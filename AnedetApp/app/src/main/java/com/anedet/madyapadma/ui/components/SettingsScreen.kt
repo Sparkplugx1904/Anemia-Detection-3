@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -25,14 +26,16 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.anedet.madyapadma.R
 import com.anedet.madyapadma.camera.CameraViewModel
+import com.anedet.madyapadma.ui.components.t
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -46,10 +49,15 @@ fun SettingsScreen(
     val stability     by viewModel.settings.stabilityFrames.collectAsState()
     val sharpness     by viewModel.settings.sharpnessMin.collectAsState()
 
+    var pendingAutoCapture by remember { mutableStateOf(autoCapture) }
+    var pendingThreshold by remember { mutableStateOf(threshold) }
+    var pendingStability by remember { mutableStateOf(stability) }
+    var pendingSharpness by remember { mutableStateOf(sharpness) }
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(stringResource(R.string.settings)) },
+                title = { Text(t("settings")) },
                 navigationIcon = {
                     IconButton(onClick = onOpenDrawer) {
                         Icon(Icons.Default.Menu, contentDescription = "Open menu")
@@ -70,46 +78,61 @@ fun SettingsScreen(
                 .padding(16.dp)
         ) {
             // Auto-Capture group
-            SettingsGroup(stringResource(R.string.smart_auto_capture)) {
+            SettingsGroup(t("smart_auto_capture")) {
                 SwitchRow(
-                    title = stringResource(R.string.smart_auto_capture),
-                    subtitle = stringResource(R.string.auto_capture_description),
-                    checked = autoCapture,
-                    onCheckedChange = { viewModel.settings.setSmartAutoCapture(it) }
+                    title = t("smart_auto_capture"),
+                    subtitle = t("auto_capture_description"),
+                    checked = pendingAutoCapture,
+                    onCheckedChange = { pendingAutoCapture = it }
                 )
             }
 
             Spacer(modifier = Modifier.height(16.dp))
 
             // Detection settings
-            SettingsGroup(stringResource(R.string.inference_settings)) {
+            SettingsGroup(t("inference_settings")) {
                 SliderRow(
-                    title = stringResource(R.string.confidence_threshold),
-                    subtitle = stringResource(R.string.threshold_description),
-                    value = threshold,
-                    onValueChange = { viewModel.settings.setConfidenceThreshold(it) },
+                    title = t("confidence_threshold"),
+                    subtitle = t("threshold_description"),
+                    value = pendingThreshold,
+                    onValueChange = { pendingThreshold = it },
                     valueRange = 0.10f..0.90f,
                     valueLabel = { "${(it * 100).toInt()}%" }
                 )
 
                 SliderRow(
-                    title = stringResource(R.string.stability_frames),
-                    subtitle = stringResource(R.string.stability_description),
-                    value = stability.toFloat(),
-                    onValueChange = { viewModel.settings.setStabilityFrames(it.toInt()) },
+                    title = t("stability_frames"),
+                    subtitle = t("stability_description"),
+                    value = pendingStability.toFloat(),
+                    onValueChange = { pendingStability = it.toInt() },
                     valueRange = 2f..10f,
                     steps = 8,
                     valueLabel = { "${it.toInt()}" }
                 )
 
                 SliderRow(
-                    title = stringResource(R.string.sharpness_min),
-                    subtitle = stringResource(R.string.sharpness_description),
-                    value = sharpness,
-                    onValueChange = { viewModel.settings.setSharpnessMin(it) },
+                    title = t("sharpness_min"),
+                    subtitle = t("sharpness_description"),
+                    value = pendingSharpness,
+                    onValueChange = { pendingSharpness = it },
                     valueRange = 1f..100f,
                     valueLabel = { "%.1f".format(it) }
                 )
+            }
+
+            Spacer(modifier = Modifier.weight(1f))
+
+            Button(
+                onClick = {
+                    viewModel.settings.setSmartAutoCapture(pendingAutoCapture)
+                    viewModel.settings.setConfidenceThreshold(pendingThreshold)
+                    viewModel.settings.setStabilityFrames(pendingStability)
+                    viewModel.settings.setSharpnessMin(pendingSharpness)
+                    onBack()
+                },
+                modifier = Modifier.align(Alignment.End)
+            ) {
+                Text(t("save"))
             }
         }
     }

@@ -31,6 +31,9 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     private val _isAnalyzing = MutableStateFlow(false)
     val isAnalyzing: StateFlow<Boolean> = _isAnalyzing.asStateFlow()
+    
+    // Synchronization lock untuk prevent bitmap recycle race condition (Bug 1.5 fix)
+    private val resultLock = Any()
 
     private val _lastLiveMask = MutableStateFlow<MaskData?>(null)
     val lastLiveMask: StateFlow<MaskData?> = _lastLiveMask.asStateFlow()
@@ -61,6 +64,20 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     private val _autoCaptureProgress = MutableStateFlow(0)
     val autoCaptureProgress: StateFlow<Int> = _autoCaptureProgress.asStateFlow()
+    
+    init {
+        // Bug 3.3 Fix: Warmup models pada app startup untuk avoid first inference slowdown
+        // Warmup dilakukan di background untuk tidak block UI
+        viewModelScope.launch {
+            try {
+                Log.d(TAG, "Warming up models on startup...")
+                pipeline.initialize()
+                Log.d(TAG, "Models warmed up successfully")
+            } catch (e: Exception) {
+                Log.e(TAG, "Model warmup failed: ${e.message}")
+            }
+        }
+    }
 
     fun updateLiveMask(data: MaskData?, imgW: Int, imgH: Int) {
         _lastLiveMask.value = data
@@ -85,16 +102,32 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     fun analyzeImage(imagePath: String) {
         viewModelScope.launch {
-            // Lepas bitmap lama sebelum replace (biar GC bisa回收 memory).
-            _predictionResult.value?.croppedPreview?.recycle()
-            _predictionResult.value?.maskOverlay?.recycle()
-            // Reset state sebelumnya agar UI tidak menampilkan result lama
-            // saat loading baru dimulai (mencegah stuck loading)
-            _predictionResult.value = null
+            synchronized(resultLock) {
+                // Safely recycle old bitmaps sebelum replace
+                // Synchronized untuk prevent race condition dengan UI thread
+                _predictionResult.value?.croppedPreview?.let { bitmap ->
+                    if (!bitmap.isRecycled) {
+                        bitmap.recycle()
+                    }
+                }
+                _predictionResult.value?.maskOverlay?.let { bitmap ->
+                    if (!bitmap.isRecycled) {
+                        bitmap.recycle()
+                    }
+                }
+                
+                // Reset state sebelumnya agar UI tidak menampilkan result lama
+                // saat loading baru dimulai (mencegah stuck loading)
+                _predictionResult.value = null
+            }
+            
             _isAnalyzing.value = true
             pipeline.initialize()
             val result = pipeline.analyze(imagePath)
-            _predictionResult.value = result
+            
+            synchronized(resultLock) {
+                _predictionResult.value = result
+            }
             _isAnalyzing.value = false
         }
     }
@@ -117,6 +150,22 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     override fun onCleared() {
         super.onCleared()
+        
+        // Cleanup bitmaps safely before closing pipeline
+        synchronized(resultLock) {
+            _predictionResult.value?.croppedPreview?.let { bitmap ->
+                if (!bitmap.isRecycled) {
+                    bitmap.recycle()
+                }
+            }
+            _predictionResult.value?.maskOverlay?.let { bitmap ->
+                if (!bitmap.isRecycled) {
+                    bitmap.recycle()
+                }
+            }
+            _predictionResult.value = null
+        }
+        
         pipeline.close()
     }
 

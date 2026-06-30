@@ -16,6 +16,37 @@ import kotlin.math.sqrt
 object ImageQualityUtils {
 
     /**
+     * Quick pre-check apakah image worth untuk di-inference.
+     * Menghindari wasted inference pada low-quality frames.
+     * 
+     * @param bitmap Input image
+     * @param minSharpness Minimum sharpness threshold (default from AppSettings)
+     * @return true if image quality sufficient for inference
+     */
+    fun isQualitySufficientForInference(bitmap: Bitmap, minSharpness: Float = 100f): Boolean {
+        // Quick dimension check - reject too small images
+        if (bitmap.width < 160 || bitmap.height < 160) {
+            return false
+        }
+        
+        // Sharpness check - but use subsampled image untuk speed
+        // (calculateBlurriness on full image bisa 30-50ms, subsample jadi ~10ms)
+        val subsampledSharpness = if (bitmap.width > 640 || bitmap.height > 640) {
+            val scale = 640f / maxOf(bitmap.width, bitmap.height)
+            val smallW = (bitmap.width * scale).toInt()
+            val smallH = (bitmap.height * scale).toInt()
+            val small = Bitmap.createScaledBitmap(bitmap, smallW, smallH, false)
+            val sharpness = calculateBlurriness(small)
+            small.recycle()
+            sharpness
+        } else {
+            calculateBlurriness(bitmap)
+        }
+        
+        return subsampledSharpness >= minSharpness
+    }
+
+    /**
      * Calculates Laplacian Variance for sharpness.
      * Higher value = sharper.
      */

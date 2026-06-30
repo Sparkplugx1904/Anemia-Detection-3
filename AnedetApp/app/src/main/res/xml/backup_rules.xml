@@ -1,13 +1,21 @@
-<?xml version="1.0" encoding="utf-8"?><!--
-   Sample backup rules file; uncomment and customize as necessary.
-   See https://developer.android.com/guide/topics/data/autobackup
-   for details.
-   Note: This file is ignored for devices older than API 31
-   See https://developer.android.com/about/versions/12/backup-restore
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    AnedetApp Backup Rules
+    
+    Excludes app settings from backup untuk privacy dan device-specific configuration.
+    Settings seperti camera calibration, confidence thresholds, dll tidak perlu
+    di-restore pada device baru.
 -->
 <full-backup-content>
-    <!--
-   <include domain="sharedpref" path="."/>
-   <exclude domain="sharedpref" path="device.xml"/>
--->
+    <!-- Exclude SharedPreferences (device-specific settings) -->
+    <exclude domain="sharedpref" path="anedet_settings.xml"/>
+    
+    <!-- Exclude database (if any in future) -->
+    <exclude domain="database" path="."/>
+    
+    <!-- Exclude all file storage (captured images in cache) -->
+    <exclude domain="file" path="."/>
+    
+    <!-- Allow external storage backup (user's saved results) - handled by MediaStore -->
+    <!-- No action needed - MediaStore items backed up by system -->
 </full-backup-content>

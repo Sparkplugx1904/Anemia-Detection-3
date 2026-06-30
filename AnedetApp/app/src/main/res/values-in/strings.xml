@@ -35,4 +35,8 @@
     <string name="toggle_mask">Alihkan mask overlay</string>
     <string name="toggle_crop_preview">Alihkan pratinjau crop konjungtiva</string>
     <string name="crop_preview_label">Crop</string>
+    
+    <!-- Medical Disclaimer -->
+    <string name="medical_disclaimer">⚕️ Aplikasi ini bukan alat diagnostik medis. Hasil hanya untuk tujuan skrining. Silakan konsultasi dengan tenaga kesehatan profesional untuk nasihat dan diagnosis medis.</string>
+    <string name="disclaimer_title">Pernyataan Medis</string>
 </resources>

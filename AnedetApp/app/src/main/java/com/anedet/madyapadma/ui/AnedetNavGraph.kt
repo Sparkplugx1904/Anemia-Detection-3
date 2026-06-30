@@ -1,5 +1,6 @@
 package com.anedet.madyapadma.ui
 
+import android.app.Activity
 import android.net.Uri
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -8,12 +9,12 @@ import androidx.compose.material3.DrawerState
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
-import androidx.core.os.LocaleListCompat
-import androidx.appcompat.app.AppCompatDelegate
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -23,6 +24,7 @@ import androidx.navigation.navArgument
 import com.anedet.madyapadma.camera.CameraViewModel
 import com.anedet.madyapadma.camera.CaptureScreen
 import com.anedet.madyapadma.ui.components.AppDrawerContent
+import com.anedet.madyapadma.ui.components.LocalLang
 import com.anedet.madyapadma.ui.components.ResultScreen
 import com.anedet.madyapadma.ui.components.SettingsScreen
 import kotlinx.coroutines.launch
@@ -34,14 +36,15 @@ fun AnedetNavGraph() {
     val drawerState: DrawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
 
+    val context = LocalContext.current
     val currentLanguage by cameraViewModel.settings.language.collectAsState()
 
     fun setLanguage(lang: String) {
         cameraViewModel.settings.setLanguage(lang)
-        val locale = LocaleListCompat.forLanguageTags(lang)
-        AppCompatDelegate.setApplicationLocales(locale)
+        (context as? Activity)?.recreate()
     }
 
+    CompositionLocalProvider(LocalLang provides currentLanguage) {
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
@@ -90,5 +93,6 @@ fun AnedetNavGraph() {
                 }
             }
         }
+    }
     }
 }

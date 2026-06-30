@@ -55,15 +55,14 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.anedet.madyapadma.R
 import com.anedet.madyapadma.camera.CameraViewModel
+import com.anedet.madyapadma.ui.components.t
 import com.anedet.madyapadma.model.PredictionResult
 import kotlin.math.max
 import kotlin.math.min
@@ -87,6 +86,7 @@ fun ResultScreen(
     }
 
     val isLoading = isAnalyzing || (predictionResult == null)
+    val savedToGalleryText = t("saved_to_gallery")
 
     val scaleAnim by animateFloatAsState(
         targetValue = if (!isLoading) 1f else 0.8f,
@@ -107,7 +107,7 @@ fun ResultScreen(
                             color = MaterialTheme.colorScheme.primary
                         )
                         Spacer(modifier = Modifier.height(16.dp))
-                        Text(stringResource(R.string.analyzing), style = MaterialTheme.typography.bodyLarge)
+                        Text(t("analyzing"), style = MaterialTheme.typography.bodyLarge)
                     }
                 }
             }
@@ -124,7 +124,7 @@ fun ResultScreen(
                         onRetake = onRetake,
                         onSave = {
                             viewModel.saveResultToGallery(imagePath)
-                            Toast.makeText(context, context.getString(R.string.saved_to_gallery), Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, savedToGalleryText, Toast.LENGTH_SHORT).show()
                         }
                     )
                 }
@@ -146,7 +146,7 @@ private fun ResultContent(
     val bitmap = remember(imagePath) { BitmapFactory.decodeFile(imagePath) }
     val isAnemic = prediction.isAnemic
     val diagColor = if (isAnemic) Color(0xFFE53935) else Color(0xFF43A047)
-    val diagText = if (isAnemic) stringResource(R.string.anemic) else stringResource(R.string.non_anemic)
+    val diagText = if (isAnemic) t("anemic") else t("non_anemic")
     val isLowConfidence = prediction.confidence < 0.55f
 
     Column(
@@ -157,7 +157,7 @@ private fun ResultContent(
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
-            text = stringResource(R.string.diagnosis_result),
+            text = t("diagnosis_result"),
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(top = 24.dp)
@@ -253,7 +253,7 @@ private fun ResultContent(
                         )
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = stringResource(R.string.crop_preview_label),
+                            text = t("crop_preview_label"),
                             color = Color.White,
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.SemiBold,
@@ -277,7 +277,7 @@ private fun ResultContent(
                 ) {
                     Icon(
                         imageVector = Icons.Filled.ContentCut,
-                        contentDescription = stringResource(R.string.toggle_crop_preview),
+                        contentDescription = t("toggle_crop_preview"),
                         tint = Color.White,
                         modifier = Modifier.size(22.dp)
                     )
@@ -303,7 +303,7 @@ private fun ResultContent(
                     }
                     Icon(
                         imageVector = icon,
-                        contentDescription = stringResource(R.string.toggle_mask),
+                        contentDescription = t("toggle_mask"),
                         tint = Color.White,
                         modifier = Modifier.size(22.dp)
                     )
@@ -329,7 +329,7 @@ private fun ResultContent(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = stringResource(R.string.low_confidence_warning),
+                    text = t("low_confidence_warning"),
                     style = MaterialTheme.typography.bodySmall,
                     color = Color(0xFFE65100)
                 )
@@ -368,7 +368,7 @@ private fun ResultContent(
 
         // Confidence + Diagnostic Class breakdown
         Text(
-            text = stringResource(R.string.diagnostic_class),
+            text = t("diagnostic_class"),
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold,
             modifier = Modifier.fillMaxWidth(),
@@ -377,14 +377,14 @@ private fun ResultContent(
         Spacer(modifier = Modifier.height(8.dp))
 
         ClassProbabilityRow(
-            label = stringResource(R.string.anemia_class),
+            label = t("anemia_class"),
             value = prediction.anemicProbability,
             isWinner = isAnemic,
             color = Color(0xFFE53935)
         )
         Spacer(modifier = Modifier.height(8.dp))
         ClassProbabilityRow(
-            label = stringResource(R.string.non_anemia_class),
+            label = t("non_anemia_class"),
             value = prediction.nonAnemicProbability,
             isWinner = !isAnemic,
             color = Color(0xFF43A047)
@@ -400,7 +400,7 @@ private fun ResultContent(
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = stringResource(R.string.confidence),
+                        text = t("confidence"),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.weight(1f)
@@ -420,7 +420,7 @@ private fun ResultContent(
                 Spacer(modifier = Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = stringResource(R.string.margin),
+                        text = t("margin"),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.weight(1f)
@@ -455,7 +455,7 @@ private fun ResultContent(
                     .height(56.dp),
                 shape = RoundedCornerShape(12.dp)
             ) {
-                Text(stringResource(R.string.retake), fontSize = 14.sp)
+                Text(t("retake"), fontSize = 14.sp)
             }
             Button(
                 onClick = onSave,
@@ -471,7 +471,7 @@ private fun ResultContent(
                     modifier = Modifier.size(20.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                Text(stringResource(R.string.save), fontSize = 14.sp)
+                Text(t("save"), fontSize = 14.sp)
             }
         }
 
