@@ -148,11 +148,6 @@ class Classifier(private val context: Context) {
         interp.runForMultipleInputsOutputs(arrayOf(inputBuffer), outputMap)
 
         val logits = output[0]
-        val sum = logits.sum()
-        if (sum > 0.95f && sum < 1.05f) {
-            return Pair(logits.getOrElse(0) { 0f }, logits.getOrElse(1) { 0f })
-        }
-
         val maxLogit = logits.max()
         val expVals  = logits.map { exp((it - maxLogit).toDouble()) }
         val expSum   = expVals.sum()
