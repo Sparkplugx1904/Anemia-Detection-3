@@ -8,12 +8,8 @@ Extended Abstract_Template_TISIIF.docx.zip
 # Local-only: decompile dumps, Kotlin caches, Python cache, committed binaries cleanup
 AnedetApp/$dump/
 AnedetApp/.kotlin/
-__pycache__/
-$extractDir/
-*.class
-AnedetApp/$dump/
-AnedetApp/.kotlin/
 AnedetApp/build/
 AnedetApp/.gradle/
 __pycache__/
+$extractDir/
 *.class
