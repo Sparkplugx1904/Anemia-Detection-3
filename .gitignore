@@ -1,0 +1,19 @@
+continue Datasets
+Datasets
+TISSIF Tim Anemia - 2026 06 22 - revisi 1 selesai.docx 
+TISSIF Tim Anemia - 2026 06 22 - revisi 2 selesai v2.docx 
+TISSIF Tim Anemia - 2026 06 22 - revisi 2 selesai.docx
+Extended Abstract_Template_TISIIF.docx.zip
+
+# Local-only: decompile dumps, Kotlin caches, Python cache, committed binaries cleanup
+AnedetApp/$dump/
+AnedetApp/.kotlin/
+__pycache__/
+$extractDir/
+*.class
+AnedetApp/$dump/
+AnedetApp/.kotlin/
+AnedetApp/build/
+AnedetApp/.gradle/
+__pycache__/
+*.class
